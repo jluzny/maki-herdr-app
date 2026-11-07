@@ -1,6 +1,6 @@
 # Maki → Herdr Desktop status bridge
 
-An experimental Maki package that reports one aggregate status for all live Maki tabs to the current Herdr Desktop pane using OSC 7501, and provides `hc_status` and `hc_command` tools. This is an agent-side bridge, not a Desktop mod or launcher.
+A Maki package that reports one aggregate status for all live Maki tabs to the current Herdr Desktop pane using OSC 7501, and provides `hc_status` and `hc_command` tools. This is an agent-side bridge, not a Desktop mod or launcher.
 
 **Verification:** A clean remote install of commit `891daf3af3d94a042b7946d3d0ef4fcd950dfed7` passed the source and permission approval flow in an isolated Maki 0.7.1 / Herdr core 0.1.18 session. Core observed `idle` at startup and a clear on clean exit; no model request was made. A `/reload` test observed a clear but exited when the UI was recreated without credentials, so successful reload is unverified. Desktop GUI rendering and the real model/turn lifecycle are also unverified. Do not rely on this bridge for critical status.
 
