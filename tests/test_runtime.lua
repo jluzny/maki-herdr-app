@@ -61,9 +61,7 @@ test("plugin starts through top-level spawn after load and preserves early event
   eq(mock.hints[1].slot, "tool_usage")
   eq(
     mock.hints[1].content,
-    "For Herdr Desktop orchestration, use hc. Before coordinating terminals or agents, run the exact bash command hc --skill and read its output. "
-      .. "For repeated hc blocked notifications, notify the user once per unresolved prompt; "
-      .. "if the prompt changes, inspect it again and notify as needed. Never bypass approvals."
+    "For Herdr Desktop, read 'hc --skill' via bash. Prefer hc_status and hc_command for other supported hc calls. Check PATH for 'herdr-app'; if absent in WSL, check 'herdr-app.exe'. Read the available CLI's --skill before Desktop operations. Do not report a missing CLI by itself; report any task you cannot complete."
   )
   eq(#rules, 1)
   eq(rules[1].tool, "bash")
@@ -530,12 +528,63 @@ test("failed exhaustion clear is best effort and recovery re-emits", function()
     mock.write_error, mock.write_result, mock.write_nil, mock.write_err = nil, nil, nil, nil
     mock:event("SessionStatusChanged", {})
     mock:drain()
-    eq(#mock.writes, 2)
+    status(mock, 3, "clear")
     mock.live = { { id = "one", status = "idle", focused = true } }
     mock:event("SessionFocusChanged", {})
     mock:drain()
-    status(mock, 3, "idle")
+    status(mock, 4, "idle")
     handle.close()
+  end
+end)
+
+test("recovery re-emits the same status after a failed clear", function()
+  local mock = mock_host.new()
+  local handle = runtime.start(mock.host, { max_attempts = 1 })
+  mock:drain()
+  mock.live = {}
+  mock.write_result = false
+  mock:event("SessionStatusChanged", {})
+  mock:drain()
+  eq(#mock.committed, 1)
+  mock.write_result = nil
+  mock.live = { { id = "one", status = "idle", focused = true } }
+  mock:event("SessionFocusChanged", {})
+  mock:drain()
+  status(mock, 3, "idle")
+  handle.close()
+  status(mock, 4, "clear")
+end)
+
+test("shutdown retries a failed exhaustion clear", function()
+  for _, failure in ipairs({ "throw", "false", "nil", "error" }) do
+    local mock = mock_host.new()
+    local handle = runtime.start(mock.host, { max_attempts = 1 })
+    mock:drain()
+    status(mock, 1, "idle")
+    mock.live = {}
+    if failure == "throw" then
+      mock.write_error = "private"
+    elseif failure == "false" then
+      mock.write_result = false
+    elseif failure == "nil" then
+      mock.write_nil = true
+    else
+      mock.write_result, mock.write_err = true, "private"
+    end
+    mock:event("SessionStatusChanged", {})
+    mock:drain()
+    status(mock, 2, "clear")
+    eq(#mock.committed, 1)
+    eq(mock.warnings[2], "herdr: could not clear terminal status")
+    mock.write_error, mock.write_result, mock.write_nil, mock.write_err = nil, nil, nil, nil
+    mock:event("SessionEnd", { reason = "shutdown", deadline_ms = 200 })
+    status(mock, 3, "clear")
+    eq(#mock.committed, 2)
+    eq(mock.committed[1], osc.encode("idle"))
+    eq(mock.committed[2], osc.encode("clear"))
+    handle.close()
+    mock:drain()
+    eq(#mock.writes, 3)
   end
 end)
 
@@ -1005,6 +1054,52 @@ test("teardown waits for an existing clear but does not clear twice", function()
   eq(coroutine.status(worker), "dead")
   eq(#mock.writes, 2)
   eq(mock.committed[2], osc.encode("clear"))
+end)
+
+test("teardown retries an in-flight failed clear only after a bounded wait", function()
+  for _, deadline in ipairs({ 100, 200 }) do
+    local mock = mock_host.new()
+    local handle = runtime.start(mock.host, { max_attempts = 1 })
+    mock:drain()
+    mock.live = {}
+    local pending = true
+    mock.on_write = function(_, _, bytes)
+      if pending and bytes == osc.encode("clear") then
+        pending = false
+        coroutine.yield()
+      end
+    end
+    mock:event("SessionStatusChanged", {})
+    local worker = coroutine.create(function()
+      mock:step()
+    end)
+    resume(worker)
+    mock.host.async = {
+      sleep = function()
+        coroutine.yield()
+      end,
+    }
+    local callback = coroutine.create(function()
+      mock:event("SessionEnd", { reason = "shutdown", deadline_ms = deadline })
+    end)
+    resume(callback)
+    eq(coroutine.status(callback), deadline == 200 and "suspended" or "dead")
+    eq(#mock.writes, 2)
+    mock.write_result = false
+    resume(worker)
+    eq(coroutine.status(worker), "dead")
+    mock.write_result = nil
+    if deadline == 200 then
+      resume(callback)
+      eq(coroutine.status(callback), "dead")
+      status(mock, 3, "clear")
+      eq(mock.committed[2], osc.encode("clear"))
+    end
+    handle.close()
+    mock:drain()
+    eq(#mock.writes, deadline == 200 and 3 or 2)
+    eq(#mock.committed, deadline == 200 and 2 or 1)
+  end
 end)
 
 test("events during a suspended live snapshot discard it and coalesce", function()

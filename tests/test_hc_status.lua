@@ -102,6 +102,20 @@ test("hc status registers a read tool with a closed bounded schema", function()
   hc_status.start({ api = {} })
 end)
 
+test("hc status description guides readable calls and filtered script output", function()
+  local _, spec = setup()
+  for _, text in ipairs({
+    "direct tool calls",
+    "batch for independent calls",
+    "code_execution",
+    "do not print raw tool results",
+    "parse and filter them in the script",
+    "print only the needed fields",
+  }) do
+    truthy(spec.description:find(text, 1, true), text)
+  end
+end)
+
 test("hc status forwards exact nested bash commands and original permission context", function()
   local mock, spec = setup()
   local ctx = {
@@ -271,6 +285,21 @@ test("hc summaries filter malicious values, controls and unknown enum fields", f
   eq(text:find("\27", 1, true), nil)
 end)
 
+test("hc status sanitizes bidi controls in raw and error fallbacks", function()
+  local mock, spec = setup()
+  local controls = "\216\156\226\128\142\226\128\143\226\128\170\226\128\171\226\128\172\226\128\173\226\128\174\226\129\166\226\129\167\226\129\168\226\129\169"
+  local sanitized = string.rep("?", 12)
+  local input = { action = "get", target = "t1" }
+  eq(lines(spec.restore(input, "raw" .. controls, false, ctx)), "hc output is not structured JSON.")
+  mock.output, mock.detail = nil, "failed" .. controls
+  local result = spec.handler(input, ctx)
+  eq(result.llm_output, "failed" .. controls)
+  eq(lines(result.body), "hc failed; details are in the tool output.")
+  mock.output = "raw" .. controls
+  mock.decode_throws = true
+  eq(lines(spec.handler(input, ctx).body), "hc summary unavailable; details are in the tool output.")
+end)
+
 test("hc list summary caps rows and handles empty or invalid terminal lists", function()
   local mock, spec = setup()
   local terminals = {}
@@ -295,6 +324,82 @@ test("hc list summary caps rows and handles empty or invalid terminal lists", fu
     lines(spec.restore({ action = "get", target = "a" }, "single-invalid", false, ctx)),
     "No terminal status to display."
   )
+end)
+
+test("hc status shows finished exit details and hidden counts with safe fields", function()
+  local mock, spec = setup()
+  local get = { action = "get", target = "t1" }
+  local list = { action = "ls" }
+  fixture(mock, "finished", { address = "t1", state = "finished", exit_code = 0, signal = 15, screen = "secret" })
+  mock.output = "finished"
+  local result = spec.handler(get, ctx)
+  eq(result.llm_output, "finished")
+  eq(lines(result.body), "t1 · finished · exit 0 · signal 15")
+  eq(lines(spec.restore(get, "finished", false, ctx)), lines(result.body))
+  fixture(mock, "list", {
+    terminals = {
+      { address = "t1", state = "finished", exit_code = -1 },
+      { address = "t2", state = "finished", signal = 9 },
+    },
+    hidden_finished = 3,
+  })
+  eq(
+    lines(spec.restore(list, "list", false, ctx)),
+    "t1 · finished · exit -1\nt2 · finished · signal 9\n3 finished terminals hidden."
+  )
+  for _, bad in ipairs({ "9", false, {}, 1.5, math.huge, -math.huge, 0 / 0, 2147483648, -2147483649 }) do
+    fixture(mock, "bad", { address = "t1", state = "finished", exit_code = bad, signal = bad })
+    eq(lines(spec.restore(get, "bad", false, ctx)), "t1 · finished")
+  end
+  for _, bad in ipairs({ "3", false, {}, -1, 0, 1.5, math.huge, 0 / 0, 9007199254740992 }) do
+    fixture(mock, "bad-list", { terminals = {}, hidden_finished = bad })
+    eq(lines(spec.restore(list, "bad-list", false, ctx)), "No terminals to display.")
+  end
+end)
+
+test("hc get warns about unsent first messages using filtered fields", function()
+  local mock, spec = setup()
+  local input = { action = "get", target = "t1" }
+  fixture(mock, "unsent", {
+    address = "t1",
+    state = "live",
+    first_message = {
+      sent = false,
+      reason = "not_started",
+      turn = 0,
+      started = false,
+      message = "secret-message",
+    },
+    screen = "secret-screen",
+  })
+  mock.output = "unsent"
+  local result = spec.handler(input, ctx)
+  local expected =
+    "t1 · live\nFirst message was not sent; inspect the terminal before retrying.\nFirst message reason: not_started\nFirst message turn: 0\nFirst message not observed starting."
+  eq(result.llm_output, "unsent")
+  eq(lines(result.body), expected)
+  eq(lines(spec.restore(input, "unsent", false, ctx)), expected)
+  fixture(mock, "unsafe", {
+    address = "t1",
+    first_message = {
+      sent = false,
+      reason = "secret\ntext",
+      turn = math.huge,
+      started = "secret",
+      message = "secret",
+    },
+  })
+  eq(
+    lines(spec.restore(input, "unsafe", false, ctx)),
+    "t1\nFirst message was not sent; inspect the terminal before retrying."
+  )
+  for _, first in ipairs({ true, "secret", {}, { sent = true, reason = "not_started" }, { sent = "false" } }) do
+    fixture(mock, "other", { address = "t1", first_message = first })
+    eq(lines(spec.restore(input, "other", false, ctx)), "t1")
+  end
+  eq(lines(spec.restore({ action = "wait", target = "t1" }, "unsent", false, ctx)), "t1 · live")
+  fixture(mock, "invalid-address", { address = "bad\nsecret", first_message = { sent = false } })
+  eq(lines(spec.restore(input, "invalid-address", false, ctx)), "No terminal status to display.")
 end)
 
 test("hc wait summarizes schema fields and bounded children without exposing other data", function()

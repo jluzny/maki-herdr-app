@@ -48,13 +48,14 @@ function M.start(host, opts)
   end
 
   local function clear_status()
-    emitted = false
     last = nil
     writing = "clear"
     local ok, result, err = pcall(host.fs.append, "/dev/tty", osc.encode("clear"))
     writing = false
     if not ok or not result or err then
       warn("could not clear terminal status")
+    else
+      emitted = false
     end
   end
 
@@ -222,7 +223,7 @@ function M.start(host, opts)
         return
       end
     end
-    if pending == "status" or (not pending and emitted) then
+    if pending == "status" or emitted then
       clear_status()
     end
   end

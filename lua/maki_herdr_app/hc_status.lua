@@ -1,4 +1,5 @@
 local M = {}
+local display = require("maki_herdr_app.display")
 
 local MAX_TARGET = 128
 local MAX_ROWS = 25
@@ -97,36 +98,17 @@ local function terminal_line(value, wait)
   if type(value.ended) == "boolean" then
     parts[#parts + 1] = value.ended and "ended" or "not ended"
   end
-  if wait then
-    local exit_code, signal = safe_int32(value.exit_code), safe_int32(value.signal)
-    if exit_code then
-      parts[#parts + 1] = "exit " .. exit_code
-    end
-    if signal then
-      parts[#parts + 1] = "signal " .. signal
-    end
-    if valid_target(value.from) then
-      parts[#parts + 1] = "from " .. value.from
-    end
+  local exit_code, signal = safe_int32(value.exit_code), safe_int32(value.signal)
+  if exit_code then
+    parts[#parts + 1] = "exit " .. exit_code
+  end
+  if signal then
+    parts[#parts + 1] = "signal " .. signal
+  end
+  if wait and valid_target(value.from) then
+    parts[#parts + 1] = "from " .. value.from
   end
   return table.concat(parts, " · ")
-end
-
-local function compact_output(text)
-  if #text <= MAX_COMPACT then
-    return text
-  end
-  local marker = "\n[output truncated; incomplete text, not JSON]\n"
-  local keep = MAX_COMPACT - #marker
-  local head = math.floor(keep / 2)
-  while head > 0 and text:byte(head + 1) >= 128 and text:byte(head + 1) < 192 do
-    head = head - 1
-  end
-  local tail = #text - (keep - math.floor(keep / 2)) + 1
-  while tail <= #text and text:byte(tail) >= 128 and text:byte(tail) < 192 do
-    tail = tail + 1
-  end
-  return text:sub(1, head) .. marker .. text:sub(tail)
 end
 
 local function summary(host, input, output, is_error)
@@ -174,6 +156,10 @@ local function summary(host, input, output, is_error)
     if invalid > 0 then
       buf:line(tostring(invalid) .. (invalid == 1 and " invalid terminal omitted." or " invalid terminals omitted."))
     end
+    local hidden = value.hidden_finished
+    if type(hidden) == "number" and hidden > 0 and hidden <= 9007199254740991 and hidden == math.floor(hidden) then
+      buf:line(tostring(hidden) .. " finished terminals hidden.")
+    end
     if type(value.machines) == "table" then
       local shown, omitted, bad = 0, 0, 0
       for _, machine in ipairs(value.machines) do
@@ -199,6 +185,21 @@ local function summary(host, input, output, is_error)
     local wait = input.action == "wait"
     local line = terminal_line(value, wait)
     buf:line(line or "No terminal status to display.")
+    local first = value.first_message
+    if input.action == "get" and line and type(first) == "table" and first.sent == false then
+      buf:line("First message was not sent; inspect the terminal before retrying.")
+      local reason = first.reason
+      if type(reason) == "string" and #reason > 0 and #reason <= 128 and reason:match("^[%w_.:/%-]+$") then
+        buf:line("First message reason: " .. reason)
+      end
+      local turn = first.turn
+      if type(turn) == "number" and turn >= 0 and turn <= 9007199254740991 and turn == math.floor(turn) then
+        buf:line("First message turn: " .. tostring(turn))
+      end
+      if type(first.started) == "boolean" then
+        buf:line(first.started and "First message started." or "First message not observed starting.")
+      end
+    end
     if wait and type(value.children) == "table" then
       local shown, omitted, invalid = 0, 0, 0
       for _, child in ipairs(value.children) do
@@ -242,7 +243,7 @@ function M.start(host)
     permission = "run",
     kind = "read",
     timeout = 140,
-    description = "Inspect Herdr terminals with hc: list live terminals, get one terminal's state, or wait for one explicit terminal. Calls bash with normal permission checks. Raw output and errors may contain sensitive data. Maki may show raw output temporarily on session resume, show raw errors, and include raw output in transcript search. Compact output is limited and may be truncated; bash may also apply its own limits or rewriting. The UI summary filters terminal fields. For other hc operations consult hc --skill.",
+    description = "Prefer direct tool calls, or batch for independent calls, so the UI can show readable summaries. When using code_execution, do not print raw tool results; parse and filter them in the script and print only the needed fields. Inspect Herdr terminals with hc: list live terminals, get one terminal's state, or wait for one explicit terminal. Calls bash with normal permission checks. Raw output and errors may contain sensitive data. Maki may show raw output temporarily on session resume, show raw errors, and include raw output in transcript search. Compact output is limited and may be truncated; bash may also apply its own limits or rewriting. The UI summary filters terminal fields. For other hc operations consult hc --skill.",
     schema = {
       type = "object",
       properties = {
@@ -276,7 +277,7 @@ function M.start(host)
       if output == nil then
         local err = type(detail) == "string" and detail or "error: bash returned no output"
         return {
-          llm_output = full and err or compact_output(err),
+          llm_output = full and err or display.compact(err, MAX_COMPACT),
           is_error = true,
           body = safe_summary(host, input, err, true),
         }
@@ -285,7 +286,7 @@ function M.start(host)
         local err = "error: bash returned invalid output"
         return { llm_output = err, is_error = true, body = safe_summary(host, input, err, true) }
       end
-      return { llm_output = full and output or compact_output(output), body = safe_summary(host, input, output, false) }
+      return { llm_output = full and output or display.compact(output, MAX_COMPACT), body = safe_summary(host, input, output, false) }
     end,
   })
 end

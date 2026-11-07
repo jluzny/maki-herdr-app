@@ -22,9 +22,7 @@ function M.start(host)
 
   host.api.register_prompt_hint({
     slot = "tool_usage",
-    content = "For Herdr Desktop orchestration, use hc. Before coordinating terminals or agents, run the exact bash command hc --skill and read its output. "
-      .. "For repeated hc blocked notifications, notify the user once per unresolved prompt; "
-      .. "if the prompt changes, inspect it again and notify as needed. Never bypass approvals.",
+    content = "For Herdr Desktop, read 'hc --skill' via bash. Prefer hc_status and hc_command for other supported hc calls. Check PATH for 'herdr-app'; if absent in WSL, check 'herdr-app.exe'. Read the available CLI's --skill before Desktop operations. Do not report a missing CLI by itself; report any task you cannot complete.",
   })
 end
 

@@ -1,4 +1,5 @@
 local M = {}
+local display = require("maki_herdr_app.display")
 
 local MAX_ARGS = 128
 local MAX_ARG = 16384
@@ -126,9 +127,9 @@ local function validate(input)
     if type(v) ~= "string" or #v > MAX_ARG or v:find("\0", 1, true) then
       return nil, "each argument must be a string of at most 16384 bytes without NUL"
     end
-    if v:find("[^a-zA-Z0-9 _%.,/:%@%+%=%-]") then
+    if v:find("[^a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]") then
       return nil,
-        "unsupported argument character; only ASCII letters, digits, spaces and _ . , / : @ + = - are supported"
+        "unsupported argument character; only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported"
     end
     count = count + 1
     total = total + #v
@@ -252,23 +253,6 @@ local function validate(input)
   return table.concat(parts, " "), command
 end
 
-local function compact(text)
-  if #text <= MAX_COMPACT then
-    return text
-  end
-  local marker = "\n[output truncated; incomplete text, not JSON]\n"
-  local keep = MAX_COMPACT - #marker
-  local head = math.floor(keep / 2)
-  while head > 0 and text:byte(head + 1) >= 128 and text:byte(head + 1) < 192 do
-    head = head - 1
-  end
-  local tail = #text - (keep - math.floor(keep / 2)) + 1
-  while tail <= #text and text:byte(tail) >= 128 and text:byte(tail) < 192 do
-    tail = tail + 1
-  end
-  return text:sub(1, head) .. marker .. text:sub(tail)
-end
-
 local function safe_field(value)
   if type(value) ~= "string" or #value == 0 or #value > 128 or not value:match("^[%w_.:/%-]+$") then
     return nil
@@ -293,11 +277,13 @@ local function terminal_line(value)
   local state = safe_field(value.state)
   local status = type(value.status) == "table" and safe_field(value.status.state) or safe_field(value.status)
   local exit_code = safe_integer(value.exit_code, -2147483648, 2147483647)
+  local signal = safe_integer(value.signal, -2147483648, 2147483647)
   return "Terminal "
     .. address
     .. (state and " · " .. state or "")
     .. (status and " · status " .. status or "")
     .. (exit_code and " · exit " .. exit_code or "")
+    .. (signal and " · signal " .. signal or "")
 end
 
 local function wait_lines(buf, value, prefix)
@@ -353,7 +339,7 @@ end
 
 local function raw_body(host, output)
   local buf = host.ui.buf()
-  local text = compact(output):gsub("[%z\1-\9\11-\31\127]", "?")
+  local text = display.sanitize(display.compact(output, MAX_COMPACT))
   for line in (text .. "\n"):gmatch("(.-)\n") do
     buf:line(line)
   end
@@ -366,17 +352,8 @@ local function content_lines(buf, label, text)
     return
   end
   buf:line(label .. ":")
-  local limit = math.min(#text, 4096)
-  while limit > 0 and limit < #text and text:byte(limit + 1) >= 128 and text:byte(limit + 1) < 192 do
-    limit = limit - 1
-  end
-  local shown = text
-    :sub(1, limit)
-    :gsub("\216\156", "?")
-    :gsub("\226\128[\142\143\170-\174]", "?")
-    :gsub("\226\129[\166-\169]", "?")
-    :gsub("\194[\128-\159]", "?")
-    :gsub("[%z\1-\9\11-\31\127]", "?")
+  local shown, limit = display.utf8_prefix(text, 4096)
+  shown = display.sanitize(shown)
   local pos, count = 1, 0
   while pos <= #shown and count < MAX_ROWS do
     local newline = shown:find("\n", pos, true)
@@ -398,6 +375,40 @@ local function summary(host, command, output, is_error)
     return raw_body(host, output)
   end
   local buf = host.ui.buf()
+  if command == "schema" and safe_field(value.openrpc) and type(value.methods) == "table" then
+    local count, max = 0, 0
+    for key in pairs(value.methods) do
+      if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+        return raw_body(host, output)
+      end
+      count = count + 1
+      max = math.max(max, key)
+    end
+    if max ~= count then
+      return raw_body(host, output)
+    end
+    if count == 0 and host.json.encode(value.methods) ~= "[]" then
+      return raw_body(host, output)
+    end
+    buf:line("Schema · OpenRPC " .. value.openrpc .. " · method names only (not the complete schema)")
+    local shown, omitted = 0, 0
+    for _, method in ipairs(value.methods) do
+      local name = type(method) == "table" and safe_field(method.name) or nil
+      if name and shown < MAX_ROWS then
+        buf:line(name)
+        shown = shown + 1
+      else
+        omitted = omitted + 1
+      end
+    end
+    if omitted > 0 then
+      buf:line(tostring(omitted) .. " methods omitted.")
+    end
+    buf:line(
+      "For the complete schema, use direct bash with hc schema --json in full mode; bash limits may still apply."
+    )
+    return buf
+  end
   if command == "templates" or command == "machine ls" then
     local list = command == "templates" and value.templates or value.machines
     if type(list) ~= "table" then
@@ -462,18 +473,6 @@ local function summary(host, command, output, is_error)
     end
     return buf
   end
-  -- Labels and update versions are arbitrary strings, not safe_field identifiers.
-  local function display_field(text)
-    if text == "" then
-      return "[empty]"
-    end
-    local limit = math.min(#text, 128)
-    while limit > 0 and limit < #text and text:byte(limit + 1) >= 128 and text:byte(limit + 1) < 192 do
-      limit = limit - 1
-    end
-    local shown = text:sub(1, limit):gsub("\194[\128-\159]", "?"):gsub("[%z\1-\31\127]", "?")
-    return shown .. (limit < #text and " [truncated]" or "")
-  end
   local terminal = terminal_line(value)
   if
     (command == "run" or command == "get" or command == "kill" or command == "label" or command == "keep") and terminal
@@ -499,7 +498,7 @@ local function summary(host, command, output, is_error)
       end
       for i = 1, math.min(#keys, MAX_ROWS) do
         local key = keys[i]
-        buf:line("Label " .. display_field(key) .. " = " .. display_field(value.labels[key]))
+        buf:line("Label " .. display.display_field(key, 128) .. " = " .. display.display_field(value.labels[key], 128))
       end
       if #keys > MAX_ROWS then
         buf:line(tostring(#keys - MAX_ROWS) .. " labels omitted.")
@@ -510,7 +509,13 @@ local function summary(host, command, output, is_error)
     if command == "keep" then
       buf:line("Keep · " .. tostring(value.keep))
     end
-    if command == "run" and type(value.first_message) == "table" and type(value.first_message.sent) == "boolean" then
+    if
+      type(value.first_message) == "table"
+      and (
+        (command == "run" and type(value.first_message.sent) == "boolean")
+        or (command == "get" and value.first_message.sent == false)
+      )
+    then
       local first = value.first_message
       buf:line(
         first.sent and "First message sent." or "First message was not sent; inspect the terminal before retrying."
@@ -671,8 +676,8 @@ local function summary(host, command, output, is_error)
         .. tostring(value.updated)
         .. (value.restarted ~= nil and " · restarted " .. tostring(value.restarted) or "")
     )
-    buf:line("Now: " .. display_field(value.now))
-    buf:line("Release: " .. display_field(value.release))
+    buf:line("Now: " .. display.display_field(value.now, 128))
+    buf:line("Release: " .. display.display_field(value.release, 128))
     return buf
   end
   if command == "machine add" or command == "machine update" or command == "machine rename" then
@@ -702,7 +707,7 @@ function M.start(host)
     permission = "run",
     kind = "execute",
     timeout = TIMEOUT + 10,
-    description = "Run bounded hc commands with structured argv (without the hc executable): ls, get, read, wait, label, keep, keys, interrupt, put, schema, --skill, run --bg, send, kill, rm, templates, help, file read/edit, non-stdin exec, machine ls/add/update/rename/rm, server start/stop/status/restart, update. Explicit terminal targets are required. Attach, connect, streaming events, file write, machine login, exec stdin and foreground run are excluded; --force is rejected. Machine add requires --install and an explicit target or --via. Never use keys or other commands to bypass a permission decision. Exec must be noninteractive and finite; commands can block until the 130-second tool timeout, including waits with longer hc timeouts. All operations use bash with its normal permissions, choices and Yolo behavior; no new autoallow or guaranteed fresh prompt. Raw arguments, output and errors can contain sensitive data; UI summaries are not a privacy boundary. Raw output may appear during restore, in errors and transcript search. Compact output and bash itself may truncate or rewrite output.",
+    description = "Prefer direct tool calls, or batch for independent calls, so the UI can show readable summaries. When using code_execution, do not print raw tool results; parse and filter them in the script and print only the needed fields. Run bounded hc commands with structured argv (without the hc executable): ls, get, read, wait, label, keep, keys, interrupt, put, schema, --skill, run --bg, send, kill, rm, templates, help, file read/edit, non-stdin exec, machine ls/add/update/rename/rm, server start/stop/status/restart, update. Explicit terminal targets are required. Attach, connect, streaming events, file write, machine login, exec stdin and foreground run are excluded; --force is rejected. Machine add requires --install and an explicit target or --via. Never use keys or other commands to bypass a permission decision. Exec must be noninteractive and finite; commands can block until the 130-second tool timeout, including waits with longer hc timeouts. All operations use bash with its normal permissions, choices and Yolo behavior; no new autoallow or guaranteed fresh prompt. Raw arguments, output and errors can contain sensitive data; UI summaries are not a privacy boundary. Raw output may appear during restore, in errors and transcript search. Compact output and bash itself may truncate or rewrite output. Schema output in full mode can be huge; prefer hc help for syntax, or parse and filter for the target schema details when needed. For a complete schema, use direct bash with hc schema --json in full mode and check for truncation; bash limits may still apply.",
     schema = {
       type = "object",
       properties = {
@@ -711,7 +716,7 @@ function M.start(host)
           items = { type = "string", maxLength = MAX_ARG },
           minItems = 1,
           maxItems = MAX_ARGS,
-          description = "hc arguments as separate strings, starting with a supported command. Only ASCII letters, digits, spaces and _ . , / : @ + = - are supported; quotes, shell metacharacters, backslashes, newlines and non-ASCII text are unsupported.",
+          description = "hc arguments as separate strings, starting with a supported command. Only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported; double quotes, other shell metacharacters, backslashes, newlines and non-ASCII text are unsupported.",
         },
       },
       required = { "argv" },
@@ -739,7 +744,7 @@ function M.start(host)
       if output == nil then
         local err = type(detail) == "string" and detail or "error: bash returned no output"
         return {
-          llm_output = full and err or compact(err),
+          llm_output = full and err or display.compact(err, MAX_COMPACT),
           is_error = true,
           body = safe_summary(host, action, err, true),
         }
@@ -748,7 +753,7 @@ function M.start(host)
         local err = "error: bash returned invalid output"
         return { llm_output = err, is_error = true, body = raw_body(host, err) }
       end
-      return { llm_output = full and output or compact(output), body = safe_summary(host, action, output, false) }
+      return { llm_output = full and output or display.compact(output, MAX_COMPACT), body = safe_summary(host, action, output, false) }
     end,
   })
 end

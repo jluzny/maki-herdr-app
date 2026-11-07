@@ -47,6 +47,9 @@ local function setup()
       end,
     },
     json = {
+      encode = function(value)
+        return getmetatable(value) == "json array" and "[]" or "{}"
+      end,
       decode = function(raw)
         mock.decodes[#mock.decodes + 1] = raw
         if mock.decode_throws then
@@ -117,16 +120,34 @@ test("hc command registers a bounded execute tool", function()
   hc_command.start({ api = {} })
 end)
 
+test("hc command description guides readable calls and bounded schema inspection", function()
+  local _, spec = setup()
+  for _, text in ipairs({
+    "direct tool calls",
+    "batch for independent calls",
+    "code_execution",
+    "do not print raw tool results",
+    "parse and filter them in the script",
+    "print only the needed fields",
+    "Schema output in full mode can be huge",
+    "hc help for syntax",
+    "filter for the target schema details",
+    "check for truncation",
+  }) do
+    truthy(spec.description:find(text, 1, true), text)
+  end
+end)
+
 test("hc command delegates to bash with the original permission context", function()
   local mock, spec = setup()
   local context = { permission = { token = "original" }, output_mode = full_ctx.output_mode }
-  local result = spec.handler({ argv = { "send", "--json", "terminal", "hello" } }, context)
+  local result = spec.handler({ argv = { "send", "--json", "terminal", "it's (ready)" } }, context)
   eq(result.llm_output, "{}")
   eq(#mock.calls, 1)
   local call = mock.calls[1]
   eq(call.ctx, context)
   eq(call.name, "bash")
-  eq(call.args.command, 'hc "send" "--json" "terminal" "hello"')
+  eq(call.args.command, [[hc "send" "--json" "terminal" "it's (ready)"]])
   eq(call.args.timeout, 130)
   eq(call.args.description, "Run hc send")
   eq(call.opts.timeout, 130)
@@ -140,13 +161,74 @@ end)
 
 test("hc command accepts only the shell-safe alphabet and preserves argument boundaries", function()
   local mock, spec = setup()
-  local result = spec.handler({ argv = { "exec", "program", "AZaz09 _.,/:@+=-", "two words", "--stdin" } }, ctx)
+  local result = spec.handler({ argv = { "exec", "program", "AZaz09 _.,/:@+=-'()", "two words", "--stdin" } }, ctx)
   eq(result.is_error, nil)
   eq(#mock.calls, 1)
-  eq(mock.calls[1].args.command, 'hc "exec" "program" "AZaz09 _.,/:@+=-" "two words" "--stdin"')
+  eq(mock.calls[1].args.command, [[hc "exec" "program" "AZaz09 _.,/:@+=-'()" "two words" "--stdin"]])
   result = spec.handler({ argv = { "send", "terminal", "" } }, ctx)
   eq(result.is_error, nil)
   eq(mock.calls[2].args.command, 'hc "send" "terminal" ""')
+end)
+
+test("hc command accepts literal apostrophes and parentheses in every argument position", function()
+  local mock, spec = setup()
+  local cases = {
+    { { "send", "terminal", "'" }, [[hc "send" "terminal" "'"]] },
+    { { "send", "terminal", "(" }, [[hc "send" "terminal" "("]] },
+    { { "send", "terminal", ")" }, [[hc "send" "terminal" ")"]] },
+    { { "send", "term(1)", "it's (ready)" }, [[hc "send" "term(1)" "it's (ready)"]] },
+    { { "exec", "--cwd", "/tmp/it's (here)", "program" }, [[hc "exec" "--cwd" "/tmp/it's (here)" "program"]] },
+    { { "exec", "--cwd=/tmp/it's (here)", "program" }, [[hc "exec" "--cwd=/tmp/it's (here)" "program"]] },
+    { { "run", "--bg", "program", "'", "(one)", "two words" }, [[hc "run" "--bg" "program" "'" "(one)" "two words"]] },
+    {
+      { "file", "edit", "--old=it's (old)", "--new", "it's (new)", "file (1)" },
+      [[hc "file" "edit" "--old=it's (old)" "--new" "it's (new)" "file (1)"]],
+    },
+  }
+  for i, case in ipairs(cases) do
+    local result = spec.handler({ argv = case[1] }, ctx)
+    eq(result.is_error, nil)
+    eq(mock.calls[i].args.command, case[2])
+  end
+  local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 _.,/:@+=-'()"
+  for i = 1, #alphabet do
+    local char = alphabet:sub(i, i)
+    local result = spec.handler({ argv = { "send", "terminal", "x" .. char .. "y" } }, ctx)
+    eq(result.is_error, nil, "allowed byte " .. string.byte(char))
+    eq(mock.calls[#mock.calls].args.command, 'hc "send" "terminal" "x' .. char .. 'y"')
+  end
+end)
+
+test("hc command still rejects shell syntax adjacent to apostrophes and parentheses", function()
+  local mock, spec = setup()
+  for _, value in ipairs({
+    "$(id)",
+    "`id`",
+    "'$(id)'",
+    "(x);id",
+    "(x)|id",
+    "(x)&id",
+    "(x)>file",
+    "(x)<file",
+    "'x\"y'",
+    "(x\\y)",
+    "(x\ny)",
+    "(é)",
+    "(x%PATH%)",
+    "(x!y!)",
+    "(x^y)",
+  }) do
+    reject(mock, spec, { argv = { "send", "terminal", value } })
+    reject(mock, spec, { argv = { "exec", "--cwd", value, "program" } })
+    reject(mock, spec, { argv = { "exec", "--cwd=" .. value, "program" } })
+  end
+  local result = spec.handler({ argv = { "send", "terminal", "it's $HOME (here)" } }, ctx)
+  eq(
+    result.llm_output,
+    "error: unsupported argument character; only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported"
+  )
+  eq(result.is_error, true)
+  eq(#mock.calls, 0)
 end)
 
 test("hc command rejects unsafe characters in arguments and flag values", function()
@@ -155,7 +237,6 @@ test("hc command rejects unsafe characters in arguments and flag values", functi
     "%PATH%",
     "!bang!",
     "^caret",
-    "a'b",
     'a"b',
     "é",
     "line\nnext",
@@ -179,9 +260,9 @@ test("hc command rejects unsafe characters in arguments and flag values", functi
     reject(mock, spec, { argv = { "exec", "--cwd", value, "program" } })
     reject(mock, spec, { argv = { "exec", "--cwd=" .. value, "program" } })
   end
-  for byte = 1, 127 do
+  for byte = 1, 255 do
     local char = string.char(byte)
-    if not char:match("^[a-zA-Z0-9 _%.,/:%@%+%=%-]$") then
+    if not char:match("^[a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]$") then
       reject(mock, spec, { argv = { "send", "terminal", "x" .. char .. "y" } })
       reject(mock, spec, { argv = { "exec", "--env=x" .. char .. "y", "program" } })
     end
@@ -422,6 +503,110 @@ test("hc command summaries and raw fallbacks restore without reexecution", funct
   eq(#mock.calls, 1, "restore must never reexecute")
 end)
 
+test("hc schema summary is bounded and never replaces model output", function()
+  local mock, spec = setup()
+  local input = { argv = { "schema", "--json" } }
+  local methods = {}
+  for i = 1, 28 do
+    methods[i] = { name = "terminal.method" .. i, description = "secret" }
+  end
+  methods[2] = { name = "bad\nname" }
+  mock.fixtures.schema = { value = { openrpc = "1.3.2", methods = methods } }
+  mock.output = "schema"
+  local result = spec.handler(input, ctx)
+  eq(result.llm_output, "schema")
+  local body = lines(result.body)
+  truthy(body:find("Schema · OpenRPC 1.3.2 · method names only (not the complete schema)", 1, true))
+  truthy(body:find("terminal.method1", 1, true))
+  truthy(body:find("terminal.method26", 1, true))
+  truthy(not body:find("terminal.method27", 1, true))
+  truthy(body:find("3 methods omitted.", 1, true))
+  truthy(body:find("direct bash with hc schema --json in full mode", 1, true))
+  truthy(not body:find("secret", 1, true))
+  eq(lines(spec.restore(input, "schema", false, ctx)), body)
+  eq(spec.handler(input, full_ctx).llm_output, "schema")
+  eq(lines(spec.restore(input, "schema", true, ctx)), "schema")
+  mock.fixtures.invalid = { value = { openrpc = "1.3.2", methods = "invalid" } }
+  eq(lines(spec.restore(input, "invalid", false, ctx)), "invalid")
+  eq(lines(spec.restore({ argv = { "schema", "--help" } }, "schema", false, ctx)), "schema")
+
+  mock.output = string.rep("a", 20000)
+  mock.fixtures[mock.output] = { value = { openrpc = "1.3.2", methods = methods } }
+  result = spec.handler(input, ctx)
+  truthy(#result.llm_output <= 16384)
+  truthy(result.llm_output:find("[output truncated; incomplete text, not JSON]", 1, true))
+  eq(lines(result.body), body)
+  eq(spec.handler(input, full_ctx).llm_output, mock.output)
+  mock.output = "upstream truncated schema"
+  result = spec.handler(input, ctx)
+  eq(result.llm_output, mock.output)
+  eq(lines(result.body), mock.output)
+end)
+
+test("hc schema rejects malformed method collections", function()
+  local mock, spec = setup()
+  local input = { argv = { "schema", "--json" } }
+  local collections = {
+    { named = { name = "terminal.method" } },
+    { [1] = { name = "terminal.method" }, extra = { name = "other" } },
+    { [1] = { name = "terminal.method" }, [3] = { name = "other" } },
+    { [0] = { name = "terminal.method" } },
+  }
+  for _, methods in ipairs(collections) do
+    mock.fixtures.malformed = { value = { openrpc = "1.3.2", methods = methods } }
+    mock.output = "malformed"
+    local result = spec.handler(input, ctx)
+    eq(result.llm_output, "malformed")
+    eq(lines(result.body), "malformed")
+    eq(lines(spec.restore(input, "malformed", false, ctx)), "malformed")
+  end
+  mock.fixtures.empty_object = { value = { openrpc = "1.3.2", methods = {} } }
+  eq(lines(spec.restore(input, "empty_object", false, ctx)), "empty_object")
+  mock.fixtures.empty = { value = { openrpc = "1.3.2", methods = setmetatable({}, { __metatable = "json array" }) } }
+  truthy(lines(spec.restore(input, "empty", false, ctx)):find("Schema · OpenRPC 1.3.2", 1, true))
+end)
+
+test("hc command get warns of unsent first messages without exposing content", function()
+  local mock, spec = setup()
+  local input = { argv = { "get", "t7" } }
+  mock.fixtures.unsent = {
+    value = {
+      address = "t7",
+      state = "live",
+      screen = "secret-screen",
+      first_message = { sent = false, reason = "not_started", turn = 0, started = false, message = "secret-message" },
+    },
+  }
+  mock.output = "unsent"
+  local result = spec.handler(input, ctx)
+  local expected =
+    "Terminal t7 · live\nFirst message was not sent; inspect the terminal before retrying.\nFirst message reason: not_started\nFirst message turn: 0\nFirst message not observed starting."
+  eq(result.llm_output, "unsent")
+  eq(lines(result.body), expected)
+  eq(lines(spec.restore(input, "unsent", false, ctx)), expected)
+  mock.fixtures.unsafe = {
+    value = {
+      address = "t7",
+      first_message = {
+        sent = false,
+        reason = "secret\ntext",
+        turn = math.huge,
+        started = "secret",
+        message = "secret",
+      },
+    },
+  }
+  eq(
+    lines(spec.restore(input, "unsafe", false, ctx)),
+    "Terminal t7\nFirst message was not sent; inspect the terminal before retrying."
+  )
+  for _, first in ipairs({ true, "secret", {}, { sent = true, reason = "not_started" }, { sent = "false" } }) do
+    mock.fixtures.other = { value = { address = "t7", first_message = first } }
+    eq(lines(spec.restore(input, "other", false, ctx)), "Terminal t7")
+  end
+  eq(lines(spec.restore({ argv = { "kill", "t7" } }, "unsent", false, ctx)), "Terminal t7 · live")
+end)
+
 test("hc command summarizes actual terminal and message results", function()
   local mock, spec = setup()
   local cases = {
@@ -462,8 +647,8 @@ test("hc command summarizes actual terminal and message results", function()
     },
     {
       { "get", "t7" },
-      { address = "t7", state = "finished", status = { state = "done" }, exit_code = -1 },
-      "Terminal t7 · finished · status done · exit -1",
+      { address = "t7", state = "finished", status = { state = "done" }, exit_code = -1, signal = 15 },
+      "Terminal t7 · finished · status done · exit -1 · signal 15",
     },
     {
       { "kill", "t7" },
@@ -481,12 +666,12 @@ test("hc command summarizes actual terminal and message results", function()
       {
         terminals = {
           { address = "t7", state = "live", status = "done" },
-          { address = "node/t8", state = "finished", exit_code = 2 },
+          { address = "node/t8", state = "finished", exit_code = 2, signal = 9 },
         },
         hidden_finished = 3,
         machines = { { name = "node", state = "unreachable" } },
       },
-      "Terminal t7 · live · status done\nTerminal node/t8 · finished · exit 2\n3 finished terminals hidden.\nMachine node · unreachable",
+      "Terminal t7 · live · status done\nTerminal node/t8 · finished · exit 2 · signal 9\n3 finished terminals hidden.\nMachine node · unreachable",
     },
     {
       { "wait", "t7" },
@@ -822,6 +1007,34 @@ test("hc command displays bounded sanitized label and update results", function(
   truthy(update_body:find("Update · updated true · restarted false\nNow: hc??", 1, true))
   truthy(update_body:find("[truncated]\nRelease: [empty]", 1, true))
   truthy(not update_body:find("\27", 1, true))
+end)
+
+test("hc command sanitizes bidi controls in labels, updates, and raw fallbacks", function()
+  local mock, spec = setup()
+  local controls = "\216\156\226\128\142\226\128\143\226\128\170\226\128\171\226\128\172\226\128\173\226\128\174\226\129\166\226\129\167\226\129\168\226\129\169"
+  local sanitized = string.rep("?", 12)
+  local label = { argv = { "label", "t1", "key=value" } }
+  mock.fixtures.labels = {
+    value = { address = "t1", labels = { ["key" .. controls] = "value" .. controls } },
+  }
+  eq(
+    lines(spec.restore(label, "labels", false, ctx)),
+    "Terminal t1\nLabel key" .. sanitized .. " = value" .. sanitized
+  )
+  local update = { argv = { "update" } }
+  mock.fixtures.update_bidi = {
+    value = { updated = true, now = "now" .. controls, release = "release" .. controls },
+  }
+  eq(
+    lines(spec.restore(update, "update_bidi", false, ctx)),
+    "Update · updated true\nNow: now" .. sanitized .. "\nRelease: release" .. sanitized
+  )
+  local raw = "raw" .. controls
+  eq(lines(spec.restore(label, raw, false, ctx)), "raw" .. sanitized)
+  mock.output, mock.detail = nil, "failed" .. controls
+  local result = spec.handler(label, ctx)
+  eq(result.llm_output, "failed" .. controls)
+  eq(lines(result.body), "failed" .. sanitized)
 end)
 
 test("hc command falls back for unsupported or malformed result shapes", function()
