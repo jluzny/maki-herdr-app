@@ -199,6 +199,19 @@ test("hc command accepts literal apostrophes and parentheses in every argument p
   end
 end)
 
+test("hc command normalizes typographic apostrophes before validation and quoting", function()
+  local mock, spec = setup()
+  local cases = {
+    { "\226\128\152", "'" },
+    { "\226\128\153", "'" },
+  }
+  for i, case in ipairs(cases) do
+    local result = spec.handler({ argv = { "send", "terminal", "it" .. case[1] .. "s ready" } }, ctx)
+    eq(result.is_error, nil)
+    eq(mock.calls[i].args.command, [[hc "send" "terminal" "it's ready"]])
+  end
+end)
+
 test("hc command still rejects shell syntax adjacent to apostrophes and parentheses", function()
   local mock, spec = setup()
   for _, value in ipairs({
@@ -214,6 +227,8 @@ test("hc command still rejects shell syntax adjacent to apostrophes and parenthe
     "(x\\y)",
     "(x\ny)",
     "(é)",
+    "(x\226\128\156y)",
+    "(x\226\128\174y)",
     "(x%PATH%)",
     "(x!y!)",
     "(x^y)",
@@ -239,6 +254,8 @@ test("hc command rejects unsafe characters in arguments and flag values", functi
     "^caret",
     'a"b',
     "é",
+    "a\226\128\156b",
+    "a\226\128\174b",
     "line\nnext",
     "line\rnext",
     "tab\tnext",

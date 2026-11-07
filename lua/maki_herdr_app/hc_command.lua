@@ -102,6 +102,10 @@ local specs = {
   ["server restart"] = { flags = { ["--json"] = true }, min = 0, max = 0 },
 }
 
+local function normalize_apostrophes(s)
+  return s:gsub("\226\128[\152\153]", "'")
+end
+
 local function quote(s)
   return '"' .. s .. '"'
 end
@@ -120,6 +124,7 @@ local function validate(input)
     return nil, "argv must be a nonempty array of strings"
   end
   local count, total = 0, 0
+  local normalized = {}
   for k, v in pairs(argv) do
     if type(k) ~= "number" or k ~= math.floor(k) or k < 1 or k > MAX_ARGS then
       return nil, "argv must be a dense array of at most 128 strings"
@@ -127,6 +132,8 @@ local function validate(input)
     if type(v) ~= "string" or #v > MAX_ARG or v:find("\0", 1, true) then
       return nil, "each argument must be a string of at most 16384 bytes without NUL"
     end
+    v = normalize_apostrophes(v)
+    normalized[k] = v
     if v:find("[^a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]") then
       return nil,
         "unsupported argument character; only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported"
@@ -134,6 +141,7 @@ local function validate(input)
     count = count + 1
     total = total + #v
   end
+  argv = normalized
   if count == 0 or count ~= #argv or total > MAX_TOTAL then
     return nil, "argv must be nonempty and dense, with at most 65536 total bytes"
   end
