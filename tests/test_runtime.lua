@@ -53,6 +53,12 @@ test("plugin starts through top-level spawn after load and preserves early event
     error(err)
   end
   eq(#tasks, 1)
+  eq(#mock.hints, 1)
+  eq(mock.hints[1].slot, "tool_usage")
+  eq(
+    mock.hints[1].content,
+    "For Herdr Desktop orchestration, use hc. Before coordinating terminals or agents, read hc --skill."
+  )
   eq(#mock.queue, 0)
   eq(mock.live_calls, nil)
   mock:event("TurnStart", { session_id = "one", text = "prompt" })

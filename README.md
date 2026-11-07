@@ -15,11 +15,11 @@ The manifest requires Maki 0.7.1 or newer; newer versions have not been verified
 
 ## Installation and updates
 
-Review the source and add this entry to your global `~/.config/maki/init.lua` alongside existing configuration. The pinned commit passed the isolated install smoke test described above:
+Review the source and add this entry to your global `~/.config/maki/init.lua` alongside existing configuration. For reproducible installs, add a reviewed commit or tag as `version`:
 
 ```lua
 maki.pack.add({
-  { src = "https://github.com/jluzny/maki-herdr-app", version = "891daf3af3d94a042b7946d3d0ef4fcd950dfed7" },
+  { src = "https://github.com/jluzny/maki-herdr-app" },
 })
 ```
 
@@ -39,6 +39,10 @@ The implementation reconciles lifecycle events with live session snapshots and e
 A `TurnEnd` with reason `finished` records `done` only if the bridge observed that tab's `TurnStart`. It is shown when that tab is idle and no higher-priority or unknown status masks it. The outcome stays recorded until that tab starts a new turn, is reset or removed, or disappears from the live snapshot; focusing a tab does not acknowledge it. Other turn-end reasons clear that tab's outcome rather than inventing success or failure. The encoder accepts `error`, but the runtime does **not** implement or emit error status. Real event ordering, cancellation, background drain and multi-tab lifecycle behavior still need live verification.
 
 Each report is a root OSC 7501 record with fixed `app=maki`, no child ID, and an ST terminator. Root reports replace the pane record; root clear also removes child records. Avoid competing reporters in the same pane. After snapshot retries are exhausted, the bridge makes one best-effort clear if it has emitted a status, then waits for a future event; a valid snapshot can re-emit even the same status. Reload/shutdown also attempts a clear after output. Clears are serialized with status writes, but an in-flight append can delay cleanup and host teardown can cancel it before completion. A failed clear or hard kill can leave stale status.
+
+## Orchestration guidance
+
+When both `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` are present, the package adds a short prompt hint to use `hc` and read `hc --skill` before coordinating terminals or agents. This is guidance, not a registered Maki skill or an enforcement mechanism; normal permissions still apply. It does not launch agents or run `hc` automatically. Inherited variables do not prove that a terminal is correctly routed to Herdr.
 
 ## Privacy and permissions
 

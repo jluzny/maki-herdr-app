@@ -63,6 +63,10 @@ function M.new()
     end,
   }
   host.api = {
+    register_prompt_hint = function(spec)
+      mock.hints = mock.hints or {}
+      mock.hints[#mock.hints + 1] = spec
+    end,
     create_autocmd = function(events, opts)
       mock.registrations[#mock.registrations + 1] = events
       if mock.register_error then
