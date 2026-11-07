@@ -44,6 +44,10 @@ end
 
 test("plugin starts through top-level spawn after load and preserves early events", function()
   local mock = mock_host.new()
+  local rules = {}
+  mock.host.api.register_permission_rule = function(spec)
+    rules[#rules + 1] = spec
+  end
   local tasks = deferred_spawn(mock)
   local old_maki = _G.maki
   _G.maki = mock.host
@@ -57,8 +61,14 @@ test("plugin starts through top-level spawn after load and preserves early event
   eq(mock.hints[1].slot, "tool_usage")
   eq(
     mock.hints[1].content,
-    "For Herdr Desktop orchestration, use hc. Before coordinating terminals or agents, read hc --skill."
+    "For Herdr Desktop orchestration, use hc. Before coordinating terminals or agents, run the exact bash command hc --skill and read its output. "
+      .. "For repeated hc blocked notifications, notify the user once per unresolved prompt; "
+      .. "if the prompt changes, inspect it again and notify as needed. Never bypass approvals."
   )
+  eq(#rules, 1)
+  eq(rules[1].tool, "bash")
+  eq(rules[1].scope, "hc --skill")
+  eq(rules[1].effect, "allow")
   eq(#mock.queue, 0)
   eq(mock.live_calls, nil)
   mock:event("TurnStart", { session_id = "one", text = "prompt" })
@@ -777,40 +787,224 @@ test("runtime restores a reopened session from status or focus events", function
   end
 end)
 
-test("teardown during a suspended write clears only after the write commits", function()
+test("teardown awaits a suspended status write in the callback before clearing once", function()
   for _, first_write in ipairs({ true, false }) do
-    local mock = mock_host.new()
-    runtime.start(mock.host)
-    if not first_write then
-      mock:drain()
-    end
-    local pending = true
-    mock.on_write = function(_, _, bytes)
-      if pending and bytes ~= osc.encode("clear") then
-        pending = false
-        coroutine.yield("write pending")
+    for _, reason in ipairs({ "reload", "shutdown", "replaced", "completed" }) do
+      local mock = mock_host.new()
+      runtime.start(mock.host)
+      if not first_write then
+        mock:drain()
       end
+      local inflight = false
+      mock.on_write = function(_, _, bytes)
+        if bytes ~= osc.encode("clear") then
+          inflight = true
+          coroutine.yield("write pending")
+          inflight = false
+        else
+          eq(inflight, false)
+        end
+      end
+      if not first_write then
+        mock.live[1].status = "working"
+        mock:event("SessionStatusChanged", { session_id = "one" })
+      end
+      local worker = coroutine.create(function()
+        mock:step()
+      end)
+      resume(worker)
+      local before = #mock.committed
+      local sleeps = 0
+      mock.host.async = {
+        sleep = function(ms)
+          eq(ms, 1)
+          sleeps = sleeps + 1
+          coroutine.yield("poll")
+        end,
+      }
+      local callback = coroutine.create(function()
+        mock:event("SessionEnd", { reason = reason, deadline_ms = 200 })
+      end)
+      resume(callback)
+      eq(coroutine.status(callback), "suspended")
+      eq(#mock.deleted, 1)
+      mock:event("SessionStatusChanged", {})
+      eq(#mock.committed, before)
+      resume(worker)
+      eq(coroutine.status(worker), "dead")
+      eq(#mock.committed, before + 1)
+      resume(callback)
+      eq(coroutine.status(callback), "dead")
+      eq(sleeps, 1)
+      eq(mock.committed[before + 1], osc.encode(first_write and "idle" or "working"))
+      eq(mock.committed[before + 2], osc.encode("clear"))
+      mock:drain()
+      eq(#mock.committed, before + 2)
     end
-    if not first_write then
-      mock.live[1].status = "working"
-      mock:event("SessionStatusChanged", { session_id = "one", status = "working", focused = true })
+  end
+end)
+
+test("teardown declines uncertain budgets and never clears a late status write", function()
+  for _, deadline in ipairs({ 0, 50, 100, -1, math.huge, "200", false }) do
+    local mock = mock_host.new()
+    local handle = runtime.start(mock.host)
+    mock.on_write = function(_, _, bytes)
+      if bytes ~= osc.encode("clear") then
+        coroutine.yield()
+      end
     end
     local worker = coroutine.create(function()
       mock:step()
     end)
     resume(worker)
-    eq(coroutine.status(worker), "suspended")
-    local before = #mock.committed
-    mock:event("SessionEnd", { session_id = "one", reason = "reload", deadline_ms = 50 })
-    eq(#mock.committed, before)
-    eq(#mock.deleted, 1)
+    local sleeps = 0
+    mock.host.async = {
+      sleep = function()
+        sleeps = sleeps + 1
+      end,
+    }
+    mock:event("SessionEnd", { reason = "reload", deadline_ms = deadline })
+    eq(sleeps, 0)
+    eq(#mock.writes, 1)
     resume(worker)
-    eq(coroutine.status(worker), "dead")
-    eq(mock.committed[before + 1], osc.encode(first_write and "idle" or "working"))
-    eq(mock.committed[before + 2], osc.encode("clear"))
+    handle.close()
     mock:drain()
-    eq(#mock.committed, before + 2)
+    eq(#mock.writes, 1)
+    eq(#mock.committed, 1)
   end
+end)
+
+test("teardown bounds a never completing write and does not clear on late completion", function()
+  local mock = mock_host.new()
+  local handle = runtime.start(mock.host)
+  mock.on_write = function(_, _, bytes)
+    if bytes ~= osc.encode("clear") then
+      coroutine.yield()
+    end
+  end
+  local worker = coroutine.create(function()
+    mock:step()
+  end)
+  resume(worker)
+  local sleeps = 0
+  mock.host.async = {
+    sleep = function(ms)
+      eq(ms, 1)
+      sleeps = sleeps + 1
+      coroutine.yield()
+    end,
+  }
+  local callback = coroutine.create(function()
+    mock:event("SessionEnd", { reason = "shutdown", deadline_ms = 10000 })
+  end)
+  for _ = 1, 20 do
+    resume(callback)
+    eq(coroutine.status(callback), "suspended")
+    eq(#mock.writes, 1)
+  end
+  resume(callback)
+  eq(coroutine.status(callback), "dead")
+  eq(sleeps, 20)
+  eq(#mock.writes, 1)
+  eq(coroutine.status(worker), "suspended")
+  resume(worker)
+  handle.close()
+  mock:drain()
+  eq(#mock.writes, 1)
+  eq(#mock.committed, 1)
+end)
+
+test("teardown stops waiting on sleep failure or without a sleep API", function()
+  for _, mode in ipairs({ "failure", "missing" }) do
+    local mock = mock_host.new()
+    runtime.start(mock.host)
+    mock.on_write = function()
+      coroutine.yield()
+    end
+    local worker = coroutine.create(function()
+      mock:step()
+    end)
+    resume(worker)
+    local sleeps = 0
+    if mode == "failure" then
+      mock.host.async = {
+        sleep = function()
+          sleeps = sleeps + 1
+          error("sleep failed")
+        end,
+      }
+    end
+    mock:event("SessionEnd", { reason = "reload", deadline_ms = 200 })
+    eq(sleeps, mode == "failure" and 1 or 0)
+    resume(worker)
+    eq(#mock.writes, 1)
+  end
+end)
+
+test("teardown scales the poll budget and cannot serialize a new generation", function()
+  local mock = mock_host.new()
+  runtime.start(mock.host)
+  local old_pending = true
+  mock.on_write = function(_, _, bytes)
+    if old_pending and bytes ~= osc.encode("clear") then
+      old_pending = false
+      coroutine.yield()
+    end
+  end
+  local worker = coroutine.create(function()
+    mock:step()
+  end)
+  resume(worker)
+  local sleeps = 0
+  mock.host.async = {
+    sleep = function()
+      sleeps = sleeps + 1
+    end,
+  }
+  mock:event("SessionEnd", { reason = "reload", deadline_ms = 112 })
+  eq(sleeps, 3)
+  mock.host.async = nil
+  local handle = runtime.start(mock.host)
+  mock:drain()
+  eq(#mock.committed, 1)
+  resume(worker)
+  eq(#mock.writes, 2)
+  eq(#mock.committed, 2)
+  handle.close()
+  status(mock, 3, "clear")
+end)
+
+test("teardown waits for an existing clear but does not clear twice", function()
+  local mock = mock_host.new()
+  runtime.start(mock.host, { max_attempts = 1 })
+  mock:drain()
+  mock.live = {}
+  mock.on_write = function(_, _, bytes)
+    if bytes == osc.encode("clear") then
+      coroutine.yield()
+    end
+  end
+  mock:event("SessionStatusChanged", {})
+  local worker = coroutine.create(function()
+    mock:step()
+  end)
+  resume(worker)
+  mock.host.async = {
+    sleep = function()
+      coroutine.yield()
+    end,
+  }
+  local callback = coroutine.create(function()
+    mock:event("SessionEnd", { reason = "reload", deadline_ms = 200 })
+  end)
+  resume(callback)
+  eq(coroutine.status(callback), "suspended")
+  resume(worker)
+  resume(callback)
+  eq(coroutine.status(callback), "dead")
+  eq(coroutine.status(worker), "dead")
+  eq(#mock.writes, 2)
+  eq(mock.committed[2], osc.encode("clear"))
 end)
 
 test("events during a suspended live snapshot discard it and coalesce", function()

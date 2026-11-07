@@ -194,13 +194,46 @@ function M.start(host, opts)
     end
   end
 
+  local function teardown_stop(deadline_ms)
+    local pending = writing
+    stop(false)
+    if pending then
+      if
+        type(deadline_ms) ~= "number"
+        or deadline_ms ~= deadline_ms
+        or deadline_ms == math.huge
+        or deadline_ms <= 100
+        or type(host.async) ~= "table"
+        or type(host.async.sleep) ~= "function"
+      then
+        return
+      end
+      local budget = math.min(20, math.floor((deadline_ms - 100) / 4))
+      for _ = 1, budget do
+        if not writing then
+          break
+        end
+        local ok = pcall(host.async.sleep, 1)
+        if not ok then
+          return
+        end
+      end
+      if writing then
+        return
+      end
+    end
+    if pending == "status" or (not pending and emitted) then
+      clear_status()
+    end
+  end
+
   local function on_event(ev)
     if not active or type(ev) ~= "table" then
       return
     end
     local data = type(ev.data) == "table" and ev.data or {}
     if ev.event == "SessionEnd" and teardown[data.reason] then
-      stop(true)
+      teardown_stop(data.deadline_ms)
       return
     end
     if
