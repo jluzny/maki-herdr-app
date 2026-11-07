@@ -58,7 +58,13 @@ Targets are ASCII letters, digits, `_`, `.`, and `-` in each part, up to 128 byt
 
 ### `hc_command`
 
-`hc_command` runs a bounded subset of `hc` through nested bash with the original permission context. It supports `run --bg`, `ls`, `get`, `read`, `wait`, `label`, `keep`, `keys`, `interrupt`, `put`, `schema`, `send`, `kill`, `rm`, `templates`, `exec`, `update`, selected `file`, `machine`, and `server` subcommands, and help/version/skill forms. It is not full `hc` parity; use bash directly, subject to permissions, for unsupported forms.
+`hc_command` runs a bounded subset of `hc` through nested bash with the original permission context. It takes an `argv` array of separate strings without the `hc` executable, for example:
+
+```json
+{"argv":["ls","--json"]}
+```
+
+It supports `run --bg`, `ls`, `get`, `read`, `wait`, `label`, `keep`, `keys`, `interrupt`, `put`, `schema`, `send`, `kill`, `rm`, `templates`, `exec`, `update`, selected `file`, `machine`, and `server` subcommands, and help/version/skill forms. It is not full `hc` parity; use bash directly, subject to permissions, for unsupported forms.
 
 Arguments are limited to ASCII letters, digits, spaces, and `_ . , / : @ + = - ' ( )`. U+2018 and U+2019 typographic apostrophes normalize to ASCII `'`; all other non-ASCII input is rejected. Double quotes, other shell metacharacters, backslashes, and newlines are rejected. `send --force` and `update --force` are rejected. Interactive commands, streams, stdin-dependent file writes, `exec --stdin`, and foreground `run` are unsupported.
 
@@ -72,7 +78,7 @@ Raw tool output and errors can contain sensitive data. The summaries are not a c
 
 ## Troubleshooting and development
 
-If status is absent, verify the direct pane, controlling TTY, both Herdr environment variables, package approval, and Maki version; then inspect Maki logs. For verification scope, safe acceptance guidance, and development checks, see [docs/verification.md](docs/verification.md).
+If status is absent, verify the direct pane, controlling TTY, both Herdr environment variables, package approval, and Maki version; then inspect Maki logs. A write failure disables reporting. When no focused live session is available, the reporter retries up to 20 times at 100 ms intervals, then best-effort clears any reported status and waits for a later event. For verification scope, safe acceptance guidance, and development checks, see [docs/verification.md](docs/verification.md).
 
 To remove the package, delete only its declaration from global `init.lua`, then `/reload` or restart. Once inactive in all Maki processes, use `/packdel maki-herdr-app`; preserve unrelated configuration.
 
