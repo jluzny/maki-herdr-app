@@ -54,6 +54,7 @@ end
 
 local states = { idle = true, working = true, done = true, blocked = true, error = true }
 local lifecycle = { live = true, finished = true }
+local machine_states = { connecting = true, connected = true, needs_login = true, unreachable = true }
 local reasons = {
   status = true,
   exit = true,
@@ -65,7 +66,13 @@ local reasons = {
   running = true,
 }
 
-local function terminal_line(value)
+local function safe_int32(value)
+  if type(value) == "number" and value >= -2147483648 and value <= 2147483647 and value == math.floor(value) then
+    return tostring(value)
+  end
+end
+
+local function terminal_line(value, wait)
   if type(value) ~= "table" then
     return nil
   end
@@ -89,6 +96,18 @@ local function terminal_line(value)
   end
   if type(value.ended) == "boolean" then
     parts[#parts + 1] = value.ended and "ended" or "not ended"
+  end
+  if wait then
+    local exit_code, signal = safe_int32(value.exit_code), safe_int32(value.signal)
+    if exit_code then
+      parts[#parts + 1] = "exit " .. exit_code
+    end
+    if signal then
+      parts[#parts + 1] = "signal " .. signal
+    end
+    if valid_target(value.from) then
+      parts[#parts + 1] = "from " .. value.from
+    end
   end
   return table.concat(parts, " · ")
 end
@@ -155,9 +174,51 @@ local function summary(host, input, output, is_error)
     if invalid > 0 then
       buf:line(tostring(invalid) .. (invalid == 1 and " invalid terminal omitted." or " invalid terminals omitted."))
     end
+    if type(value.machines) == "table" then
+      local shown, omitted, bad = 0, 0, 0
+      for _, machine in ipairs(value.machines) do
+        local name = type(machine) == "table" and machine.name or nil
+        if not valid_target(name) or name:find("/", 1, true) then
+          bad = bad + 1
+        elseif shown < MAX_ROWS then
+          local state = machine_states[machine.state] and machine.state or "unknown"
+          buf:line("Machine " .. name .. " · " .. state)
+          shown = shown + 1
+        else
+          omitted = omitted + 1
+        end
+      end
+      if omitted > 0 then
+        buf:line(tostring(omitted) .. (omitted == 1 and " valid machine omitted." or " valid machines omitted."))
+      end
+      if bad > 0 then
+        buf:line(tostring(bad) .. (bad == 1 and " invalid machine omitted." or " invalid machines omitted."))
+      end
+    end
   else
-    local line = terminal_line(value)
+    local wait = input.action == "wait"
+    local line = terminal_line(value, wait)
     buf:line(line or "No terminal status to display.")
+    if wait and type(value.children) == "table" then
+      local shown, omitted, invalid = 0, 0, 0
+      for _, child in ipairs(value.children) do
+        local child_line = terminal_line(child, true)
+        if not child_line then
+          invalid = invalid + 1
+        elseif shown < MAX_ROWS then
+          buf:line("Child: " .. child_line)
+          shown = shown + 1
+        else
+          omitted = omitted + 1
+        end
+      end
+      if omitted > 0 then
+        buf:line(tostring(omitted) .. (omitted == 1 and " valid child omitted." or " valid children omitted."))
+      end
+      if invalid > 0 then
+        buf:line(tostring(invalid) .. (invalid == 1 and " invalid child omitted." or " invalid children omitted."))
+      end
+    end
   end
   return buf
 end

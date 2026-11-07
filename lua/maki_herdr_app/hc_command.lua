@@ -210,6 +210,9 @@ local function validate(input)
               return nil, "missing value for " .. key
             end
             value = argv[i]
+            if value ~= "-" and value:sub(1, 1) == "-" then
+              return nil, "missing value for " .. key .. "; use " .. key .. "=VALUE for values beginning with -"
+            end
           end
           if value == "" and key ~= "--new" and key ~= "--old" then
             return nil, "empty value for " .. key
@@ -306,6 +309,8 @@ local function wait_lines(buf, value, prefix)
   local reason = safe_field(value.reason)
   local status = safe_field(value.status)
   local exit_code = safe_integer(value.exit_code, -2147483648, 2147483647)
+  local signal = safe_integer(value.signal, -2147483648, 2147483647)
+  local from = safe_field(value.from)
   if terminal then
     parts[#parts + 1] = terminal
   end
@@ -321,8 +326,28 @@ local function wait_lines(buf, value, prefix)
   if exit_code then
     parts[#parts + 1] = "exit " .. exit_code
   end
+  if signal then
+    parts[#parts + 1] = "signal " .. signal
+  end
+  if from then
+    parts[#parts + 1] = "from " .. from
+  end
   if #parts > 0 then
     buf:line(prefix .. table.concat(parts, " · "))
+  end
+end
+
+local function wait_children(buf, value)
+  local children = type(value) == "table" and value.children
+  if type(children) ~= "table" then
+    return
+  end
+  local count = #children
+  for i = 1, math.min(count, MAX_ROWS) do
+    wait_lines(buf, children[i], "Child: ")
+  end
+  if count > MAX_ROWS then
+    buf:line(tostring(count - MAX_ROWS) .. " children omitted.")
   end
 end
 
@@ -333,6 +358,35 @@ local function raw_body(host, output)
     buf:line(line)
   end
   return buf
+end
+
+local function content_lines(buf, label, text)
+  if text == "" then
+    buf:line(label .. ": [empty]")
+    return
+  end
+  buf:line(label .. ":")
+  local limit = math.min(#text, 4096)
+  while limit > 0 and limit < #text and text:byte(limit + 1) >= 128 and text:byte(limit + 1) < 192 do
+    limit = limit - 1
+  end
+  local shown = text
+    :sub(1, limit)
+    :gsub("\216\156", "?")
+    :gsub("\226\128[\142\143\170-\174]", "?")
+    :gsub("\226\129[\166-\169]", "?")
+    :gsub("\194[\128-\159]", "?")
+    :gsub("[%z\1-\9\11-\31\127]", "?")
+  local pos, count = 1, 0
+  while pos <= #shown and count < MAX_ROWS do
+    local newline = shown:find("\n", pos, true)
+    buf:line(newline and shown:sub(pos, newline - 1) or shown:sub(pos))
+    count = count + 1
+    pos = newline and newline + 1 or #shown + 1
+  end
+  if limit < #text or pos <= #shown then
+    buf:line("[content truncated; remainder omitted]")
+  end
 end
 
 local function summary(host, command, output, is_error)
@@ -390,15 +444,72 @@ local function summary(host, command, output, is_error)
     if hidden and hidden ~= "0" then
       buf:line(hidden .. " finished terminals hidden.")
     end
-    if type(value.machines) == "table" and #value.machines > 0 then
-      local count = #value.machines
-      buf:line(tostring(count) .. (count == 1 and " machine" or " machines") .. " (see raw output).")
+    if type(value.machines) == "table" then
+      local shown_machines, omitted_machines = 0, 0
+      for _, machine in ipairs(value.machines) do
+        local name = type(machine) == "table" and safe_field(machine.name) or nil
+        local state = type(machine) == "table" and safe_field(machine.state) or nil
+        if name and shown_machines < MAX_ROWS then
+          buf:line("Machine " .. name .. (state and " · " .. state or ""))
+          shown_machines = shown_machines + 1
+        else
+          omitted_machines = omitted_machines + 1
+        end
+      end
+      if omitted_machines > 0 then
+        buf:line(tostring(omitted_machines) .. " machines omitted.")
+      end
     end
     return buf
   end
+  -- Labels and update versions are arbitrary strings, not safe_field identifiers.
+  local function display_field(text)
+    if text == "" then
+      return "[empty]"
+    end
+    local limit = math.min(#text, 128)
+    while limit > 0 and limit < #text and text:byte(limit + 1) >= 128 and text:byte(limit + 1) < 192 do
+      limit = limit - 1
+    end
+    local shown = text:sub(1, limit):gsub("\194[\128-\159]", "?"):gsub("[%z\1-\31\127]", "?")
+    return shown .. (limit < #text and " [truncated]" or "")
+  end
   local terminal = terminal_line(value)
-  if (command == "run" or command == "get" or command == "kill") and terminal then
+  if
+    (command == "run" or command == "get" or command == "kill" or command == "label" or command == "keep") and terminal
+  then
+    if command == "keep" and type(value.keep) ~= "boolean" then
+      return raw_body(host, output)
+    end
+    if command == "label" then
+      if type(value.labels) ~= "table" then
+        return raw_body(host, output)
+      end
+      local keys = {}
+      for key, label in pairs(value.labels) do
+        if type(key) ~= "string" or type(label) ~= "string" then
+          return raw_body(host, output)
+        end
+        keys[#keys + 1] = key
+      end
+      table.sort(keys)
+      buf:line(terminal)
+      if #keys == 0 then
+        buf:line("Labels: [none]")
+      end
+      for i = 1, math.min(#keys, MAX_ROWS) do
+        local key = keys[i]
+        buf:line("Label " .. display_field(key) .. " = " .. display_field(value.labels[key]))
+      end
+      if #keys > MAX_ROWS then
+        buf:line(tostring(#keys - MAX_ROWS) .. " labels omitted.")
+      end
+      return buf
+    end
     buf:line(terminal)
+    if command == "keep" then
+      buf:line("Keep · " .. tostring(value.keep))
+    end
     if command == "run" and type(value.first_message) == "table" and type(value.first_message.sent) == "boolean" then
       local first = value.first_message
       buf:line(
@@ -426,6 +537,7 @@ local function summary(host, command, output, is_error)
       buf:line(value.started and "Turn started." or "Turn not observed starting.")
     end
     wait_lines(buf, value.wait, "Wait: ")
+    wait_children(buf, value.wait)
     return buf
   end
   if
@@ -435,23 +547,135 @@ local function summary(host, command, output, is_error)
     and type(value.ended) == "boolean"
   then
     wait_lines(buf, value, "Wait: ")
-    if type(value.children) == "table" then
-      local count = #value.children
-      for i = 1, math.min(count, MAX_ROWS) do
-        wait_lines(buf, value.children[i], "Child: ")
-      end
-      if count > MAX_ROWS then
-        buf:line(tostring(count - MAX_ROWS) .. " children omitted.")
-      end
+    wait_children(buf, value)
+    return buf
+  end
+  if command == "read" and type(value.text) == "string" and type(value.complete) == "boolean" then
+    local how, why = safe_field(value.how), safe_field(value.why)
+    if how then
+      buf:line("Read · " .. how .. " · complete " .. tostring(value.complete) .. (why and " · why " .. why or ""))
+      content_lines(buf, "Text", value.text)
+      return buf
     end
+  end
+  if command == "interrupt" then
+    local outcome = safe_field(value.outcome)
+    local key = (value.key == "esc" or value.key == "ctrl+c") and value.key or nil
+    if outcome and key then
+      buf:line("Interrupt · " .. outcome .. " · key " .. key)
+      return buf
+    end
+  end
+  if command == "keys" and turn then
+    local status = safe_field(value.status)
+    buf:line("Keys accepted · turn " .. turn .. (status and " · status " .. status or ""))
+    return buf
+  end
+  if command == "put" or command == "file edit" then
+    local bytes = safe_integer(value.bytes, 0, 9007199254740991)
+    if type(value.path) == "string" and bytes then
+      buf:line((command == "put" and "File sent" or "File edited") .. " · " .. bytes .. " bytes")
+      return buf
+    end
+  end
+  if command == "file read" and type(value.text) == "string" then
+    local first = safe_integer(value.first, 0, 9007199254740991)
+    local last = safe_integer(value.last, 0, 9007199254740991)
+    local total = safe_integer(value.lines, 0, 9007199254740991)
+    if first and last and total then
+      if value.last < value.first or value.lines == 0 then
+        buf:line("File read · empty range · total " .. total)
+      else
+        buf:line("File read · lines " .. first .. "–" .. last .. " · total " .. total)
+      end
+      content_lines(buf, "Text", value.text)
+      return buf
+    end
+  end
+  if command == "exec" and type(value.stdout) == "string" and type(value.stderr) == "string" then
+    local ms = safe_integer(value.ms, 0, 9007199254740991)
+    local code = safe_integer(value.code, -2147483648, 2147483647)
+    local signal = safe_integer(value.signal, -2147483648, 2147483647)
+    if ms and type(value.timed_out) == "boolean" and type(value.truncated) == "boolean" then
+      if
+        not host.base64
+        or type(host.base64.decode) ~= "function"
+        or not host.text
+        or type(host.text.to_utf8) ~= "function"
+      then
+        return raw_body(host, output)
+      end
+      local stdout, stdout_err = host.base64.decode(value.stdout)
+      local stderr, stderr_err = host.base64.decode(value.stderr)
+      if stdout_err or stderr_err or type(stdout) ~= "string" or type(stderr) ~= "string" then
+        return raw_body(host, output)
+      end
+      stdout, stderr = host.text.to_utf8(stdout), host.text.to_utf8(stderr)
+      if type(stdout) ~= "string" or type(stderr) ~= "string" then
+        return raw_body(host, output)
+      end
+      buf:line(
+        "Exec"
+          .. (code and " · exit " .. code or "")
+          .. (signal and " · signal " .. signal or "")
+          .. " · "
+          .. ms
+          .. " ms · timed out "
+          .. tostring(value.timed_out)
+          .. " · truncated "
+          .. tostring(value.truncated)
+      )
+      content_lines(buf, "Stdout", stdout)
+      content_lines(buf, "Stderr", stderr)
+      return buf
+    end
+  end
+  if command == "server status" or command == "server start" then
+    local pid = safe_integer(value.pid, 0, 4294967295)
+    local live = safe_integer(value.live, 0, 9007199254740991)
+    local finished = safe_integer(value.finished, 0, 9007199254740991)
+    local uptime = safe_integer(value.uptime_ms, 0, 9007199254740991)
+    local version = safe_field(value.version)
+    if pid and live and finished and uptime and version then
+      buf:line("Server status · version " .. version .. " · pid " .. pid .. " · uptime " .. uptime .. " ms")
+      buf:line("Terminals · live " .. live .. " · finished " .. finished)
+      return buf
+    end
+  end
+  if (command == "server stop" or command == "server restart") and type(value.stopped) == "boolean" then
+    buf:line(
+      "Server "
+        .. (command == "server restart" and "restart request" or "stop")
+        .. " · stopped "
+        .. tostring(value.stopped)
+        .. (command == "server restart" and " · restart not confirmed" or "")
+    )
     return buf
   end
   local removed = safe_field(value.removed)
-  if command == "rm" and removed then
-    buf:line("Removed " .. removed)
+  if (command == "rm" or command == "machine rm") and removed then
+    buf:line((command == "machine rm" and "Machine removed " or "Removed ") .. removed)
     return buf
   end
-  if command:sub(1, 8) == "machine " then
+  if
+    command == "update"
+    and type(value.updated) == "boolean"
+    and type(value.now) == "string"
+    and type(value.release) == "string"
+  then
+    if value.restarted ~= nil and type(value.restarted) ~= "boolean" then
+      return raw_body(host, output)
+    end
+    buf:line(
+      "Update · updated "
+        .. tostring(value.updated)
+        .. (value.restarted ~= nil and " · restarted " .. tostring(value.restarted) or "")
+    )
+    buf:line("Now: " .. display_field(value.now))
+    buf:line("Release: " .. display_field(value.release))
+    return buf
+  end
+  if command == "machine add" or command == "machine update" or command == "machine rename" then
     local name = safe_field(value.name)
     if name then
       buf:line("Machine " .. name .. (safe_field(value.state) and " · " .. value.state or ""))

@@ -297,6 +297,100 @@ test("hc list summary caps rows and handles empty or invalid terminal lists", fu
   )
 end)
 
+test("hc wait summarizes schema fields and bounded children without exposing other data", function()
+  local mock, spec = setup()
+  local children = {
+    {
+      terminal = "node/t1",
+      reason = "exit",
+      ended = true,
+      exit_code = -2147483648,
+      signal = 15,
+      from = "t2",
+      output = "secret-output",
+    },
+    { terminal = "bad\nsecret" },
+  }
+  for i = 2, 27 do
+    children[#children + 1] = { terminal = "t" .. i, reason = "running", ended = false }
+  end
+  fixture(mock, "wait", {
+    terminal = "t0",
+    reason = "message",
+    ended = false,
+    status = "working",
+    exit_code = 0,
+    signal = 9,
+    from = "node/t3",
+    children = children,
+    message = "secret-message",
+  })
+  mock.output = "wait"
+  local input = { action = "wait", target = "t0" }
+  local result = spec.handler(input, ctx)
+  eq(result.llm_output, "wait")
+  local body = result.body
+  eq(body.lines[1], "t0 · working · message · not ended · exit 0 · signal 9 · from node/t3")
+  eq(body.lines[2], "Child: node/t1 · exit · ended · exit -2147483648 · signal 15 · from t2")
+  eq(body.lines[26], "Child: t25 · running · not ended")
+  eq(body.lines[27], "2 valid children omitted.")
+  eq(body.lines[28], "1 invalid child omitted.")
+  eq(lines(spec.restore(input, "wait", false, ctx)), lines(body))
+  eq(lines(body):find("secret", 1, true), nil)
+end)
+
+test("hc wait filters invalid signal, exit and sender values without affecting valid fields", function()
+  local mock, spec = setup()
+  local input = { action = "wait", target = "t0" }
+  for _, value in ipairs({ "9", false, {}, 1.5, math.huge, -math.huge, 0 / 0, 2147483648, -2147483649 }) do
+    fixture(mock, "bad", { terminal = "t0", exit_code = value, signal = value })
+    eq(lines(spec.restore(input, "bad", false, ctx)), "t0")
+  end
+  for _, sender in ipairs({ false, 42, {}, "node/t1/extra", "bad\nsecret", string.rep("x", 129), "a;secret" }) do
+    fixture(mock, "bad-sender", { terminal = "t0", from = sender, exit_code = 2147483647, signal = 0 })
+    eq(lines(spec.restore(input, "bad-sender", false, ctx)), "t0 · exit 2147483647 · signal 0")
+  end
+  fixture(
+    mock,
+    "nested",
+    { terminal = "t0", children = { { terminal = "t1", children = { { terminal = "secret" } } } } }
+  )
+  eq(lines(spec.restore(input, "nested", false, ctx)), "t0\nChild: t1")
+  eq(lines(spec.restore({ action = "get", target = "t0" }, "nested", false, ctx)), "t0")
+end)
+
+test("hc list shows bounded machine availability with safe names and states", function()
+  local mock, spec = setup()
+  local machines = {
+    { name = "node", state = "unreachable", why = "secret-why", target = "secret-target" },
+    { name = "bad\nsecret", state = "connected" },
+    { name = "node/other", state = "connected" },
+    { name = "unknown", state = "secret-state" },
+    { name = "connecting", state = "connecting" },
+    { name = "connected", state = "connected" },
+    { name = "login", state = "needs_login" },
+  }
+  for i = 1, 23 do
+    machines[#machines + 1] = { name = "m" .. i, state = "connected" }
+  end
+  fixture(mock, "machines", { terminals = {}, machines = machines })
+  mock.output = "machines"
+  local result = spec.handler({ action = "ls" }, ctx)
+  eq(result.llm_output, "machines")
+  local body = result.body
+  eq(body.lines[1], "No terminals to display.")
+  eq(body.lines[2], "Machine node · unreachable")
+  eq(body.lines[3], "Machine unknown · unknown")
+  eq(body.lines[4], "Machine connecting · connecting")
+  eq(body.lines[5], "Machine connected · connected")
+  eq(body.lines[6], "Machine login · needs_login")
+  eq(body.lines[26], "Machine m20 · connected")
+  eq(body.lines[27], "3 valid machines omitted.")
+  eq(body.lines[28], "2 invalid machines omitted.")
+  eq(lines(body):find("secret", 1, true), nil)
+  eq(lines(spec.restore({ action = "ls" }, "machines", false, ctx)), lines(body))
+end)
+
 test("hc summaries reject malformed, scalar, oversized and throwing JSON without leaking raw data", function()
   local mock, spec = setup()
   fixture(mock, "scalar", "secret-scalar")
