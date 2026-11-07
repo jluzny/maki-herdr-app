@@ -2,7 +2,7 @@
 
 An experimental Maki package that reports one aggregate status for all live Maki tabs to the current Herdr Desktop pane using OSC 7501. This is an agent-side bridge, not a Desktop mod or launcher.
 
-**Verification:** In an isolated real package-host test with Maki 0.7.1 and Herdr core 0.1.18, a disposable local package loaded with manifest approval; core observed `idle` at startup and `clear` on clean Ctrl-C exit (exit 0). No model request was made. A `/reload` test observed a clear but exited 1 when the UI was recreated without Anthropic credentials; it did not verify a successful reload. The remote clean-install path, Desktop GUI rendering and the real model/turn lifecycle have not been verified. Do not rely on this bridge for critical status.
+**Verification:** A clean remote install of commit `891daf3af3d94a042b7946d3d0ef4fcd950dfed7` passed the source and permission approval flow in an isolated Maki 0.7.1 / Herdr core 0.1.18 session. Core observed `idle` at startup and a clear on clean exit; no model request was made. A `/reload` test observed a clear but exited when the UI was recreated without credentials, so successful reload is unverified. Desktop GUI rendering and the real model/turn lifecycle are also unverified. Do not rely on this bridge for critical status.
 
 ## Requirements and limits
 
@@ -15,15 +15,15 @@ The manifest requires Maki 0.7.1 or newer; newer versions have not been verified
 
 ## Installation and updates
 
-The repository has no tested published revision yet, and the remote installation below has not been validated. Once the repository is published, review the source and add this entry to your global `~/.config/maki/init.lua` alongside existing configuration:
+Review the source and add this entry to your global `~/.config/maki/init.lua` alongside existing configuration. The pinned commit passed the isolated install smoke test described above:
 
 ```lua
 maki.pack.add({
-  { src = "https://github.com/jluzny/maki-herdr-app" },
+  { src = "https://github.com/jluzny/maki-herdr-app", version = "891daf3af3d94a042b7946d3d0ef4fcd950dfed7" },
 })
 ```
 
-Start Maki interactively in a direct Herdr pane, approve the source and the requested permissions only after review, and use `/reload` or restart if needed. The package auto-loads; no manual `require` is needed. When a reviewed, tested commit or release is available, you can add its actual revision as `version` in the package specification. Maki records the selected commit in the global config directory's `pack-lock.json`; an existing lock entry takes precedence over a later `version` change. To update, use `/packupdate maki-herdr-app` and review the proposed revision, or remove only this package's lock entry and restart to resolve the declared version. Avoid committing machine-local approvals or credentials.
+Start Maki interactively in a direct Herdr pane, approve the source and the requested permissions only after review, and use `/reload` or restart if needed. The package auto-loads; no manual `require` is needed. Change `version` only after reviewing a newer commit or release. Maki records the selected commit in the global config directory's `pack-lock.json`; an existing lock entry takes precedence over a later `version` change. To update, use `/packupdate maki-herdr-app` and review the proposed revision, or remove only this package's lock entry and restart to resolve the declared version. Avoid committing machine-local approvals or credentials.
 
 ## Status behavior
 
@@ -62,7 +62,7 @@ From the repository root, run `lua tests/run.lua` and `stylua --check .` with Lu
 
 ## Catalogs
 
-The [Maki plugin catalog](https://maki.sh/plugins/) discovers public, non-archived GitHub repositories with both `maki` and `plugin` topics; direct package installation does not require a listing. Discovery can be delayed or limited and is not an endorsement. Publication, topics and an observed listing have not been verified for this repository.
+The [Maki plugin catalog](https://maki.sh/plugins/) discovers public, non-archived GitHub repositories with both `maki` and `plugin` topics; direct package installation does not require a listing. Discovery can be delayed or limited and is not an endorsement. The published repository has both topics and appears in GitHub search; its rendered catalog listing has not been verified.
 
 Herdr Desktop's [mods gallery](https://herdr.dev/gallery/?type=mods), Desktop launcher entries and agent-side OSC bridges are separate things. This package is only the latter; it does not install a mod or launcher. Herdr TUI's plugin system is also separate, so its manifest and install commands do not install this Desktop status bridge.
 
