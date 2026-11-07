@@ -22,6 +22,7 @@ require("test_reducer")
 require("test_osc")
 require("test_runtime")
 require("test_prompt_hint")
+require("test_hc_status")
 
 local failed = 0
 for _, case in ipairs(tests) do

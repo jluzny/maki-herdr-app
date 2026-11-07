@@ -1,6 +1,6 @@
 # Maki → Herdr Desktop status bridge
 
-An experimental Maki package that reports one aggregate status for all live Maki tabs to the current Herdr Desktop pane using OSC 7501. This is an agent-side bridge, not a Desktop mod or launcher.
+An experimental Maki package that reports one aggregate status for all live Maki tabs to the current Herdr Desktop pane using OSC 7501, and provides an `hc_status` inspection tool. This is an agent-side bridge, not a Desktop mod or launcher.
 
 **Verification:** A clean remote install of commit `891daf3af3d94a042b7946d3d0ef4fcd950dfed7` passed the source and permission approval flow in an isolated Maki 0.7.1 / Herdr core 0.1.18 session. Core observed `idle` at startup and a clear on clean exit; no model request was made. A `/reload` test observed a clear but exited when the UI was recreated without credentials, so successful reload is unverified. Desktop GUI rendering and the real model/turn lifecycle are also unverified. Do not rely on this bridge for critical status.
 
@@ -46,13 +46,27 @@ This is best effort, not a shutdown guarantee. Maki reports the shared grace per
 
 ## Orchestration guidance
 
-When both `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` are nonempty strings, the package adds a prompt hint to run the exact bash command `hc --skill` and read its output before coordinating terminals or agents. It also registers an allow rule for that exact bash scope only; other commands and variants remain subject to normal permissions. User configuration and session deny rules override the plugin allow. For repeated `hc` blocked notifications, the hint advises notifying the user once per unresolved prompt, inspecting a changed prompt again and notifying as needed, and never bypassing approvals. The hint is guidance, not a registered Maki skill or an enforcement mechanism. The package does not launch agents or run `hc` automatically. Inherited variables do not prove that a terminal is correctly routed to Herdr.
+When both `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` are nonempty strings, the package adds a prompt hint to run the exact bash command `hc --skill` and read its output before coordinating terminals or agents. It also registers an allow rule for that exact bash scope only; other commands and variants remain subject to normal permissions. User configuration and session deny rules override the plugin allow. For repeated `hc` blocked notifications, the hint advises notifying the user once per unresolved prompt, inspecting a changed prompt again and notifying as needed, and never bypassing approvals. The hint is guidance, not a registered Maki skill or an enforcement mechanism. The package does not launch agents or run `hc` automatically; `hc_status` invokes it when called. Inherited variables do not prove that a terminal is correctly routed to Herdr.
 
 The rule is active for the plugin host while it is loaded, after the environment check. Maki checks parsed shell command scopes: an allowed `hc --skill` segment can appear in a compound command while other segments are checked separately. The rule matches the command name, not the executable's resolved path; make sure the `hc` found on `PATH` is trusted.
 
+## `hc_status` inspection tool
+
+The agent can call `hc_status` with an `action`:
+
+- `ls` lists terminals; it accepts neither `target` nor `timeout`.
+- `get` inspects one terminal; it requires `target` and does not accept `timeout`.
+- `wait` waits for one terminal; it requires `target` and accepts an integer `timeout` in seconds (1–120, default 30).
+
+The explicit target is a terminal name or `machine/name`, using only ASCII letters, digits, `_`, `.` and `-` in each part, at most 128 bytes total. The tool invokes `hc ls`, `hc get`, or `hc wait` with JSON output through nested `bash`; it does not run commands in terminals or send messages. Status operations may start the Herdr core or mark child news as seen.
+
+Nested bash calls use normal permission checks and may require approval; the package does not auto-allow these status commands. The separate `hc --skill` rule above does not allow them. Invalid inputs are rejected; nested call errors are returned to the agent.
+
+The UI summary displays filtered status fields, with up to 25 valid terminals for `ls`; invalid or excess rows are omitted. This is not a confidentiality boundary: the model receives the raw tool output, errors may appear raw in the UI, and restoring a session can briefly display raw output before the summary. Output may include sensitive data. Compact output is limited to 16 KiB and may be truncated into incomplete, non-JSON text; bash may impose its own limits or rewrite output. Malformed or oversized output may not produce a summary.
+
 ## Privacy and permissions
 
-The bridge emits only the aggregate state and fixed app identifier, not prompts, answers, titles, paths, credentials or conversation content. It requests `env` to read the two Herdr variables, `fs_write` to append fixed sequences to `/dev/tty`, and `run` to register the exact `hc --skill` bash allow rule. These grants are broader than those uses: `env` can expose environment secrets, `fs_write` can modify files, and `run` permits the plugin to start processes. Review the package and manifest before approving them. Existing installations updating to this version may be prompted to approve the additional `run` permission. It does not request conversation-content permissions or network access.
+The OSC bridge emits only the aggregate state and fixed app identifier, not prompts, answers, titles, paths, credentials or conversation content. The package requests `env` to read the two Herdr variables, `fs_write` to append fixed sequences to `/dev/tty`, and `run` for the `hc --skill` bash allow rule and `hc_status`. These grants are broader than those uses: `env` can expose environment secrets, `fs_write` can modify files, and `run` permits the plugin to start processes. Review the package and manifest before approving them. Existing installations updating to this version may be prompted to approve the additional `run` permission. It does not request conversation-content permissions or network access.
 
 ## Verification and troubleshooting
 
