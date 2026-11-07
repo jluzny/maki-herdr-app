@@ -1,6 +1,6 @@
 # Maki → Herdr Desktop status bridge
 
-An experimental Maki package that reports one aggregate status for all live Maki tabs to the current Herdr Desktop pane using OSC 7501, and provides an `hc_status` inspection tool. This is an agent-side bridge, not a Desktop mod or launcher.
+An experimental Maki package that reports one aggregate status for all live Maki tabs to the current Herdr Desktop pane using OSC 7501, and provides `hc_status` and `hc_command` tools. This is an agent-side bridge, not a Desktop mod or launcher.
 
 **Verification:** A clean remote install of commit `891daf3af3d94a042b7946d3d0ef4fcd950dfed7` passed the source and permission approval flow in an isolated Maki 0.7.1 / Herdr core 0.1.18 session. Core observed `idle` at startup and a clear on clean exit; no model request was made. A `/reload` test observed a clear but exited when the UI was recreated without credentials, so successful reload is unverified. Desktop GUI rendering and the real model/turn lifecycle are also unverified. Do not rely on this bridge for critical status.
 
@@ -64,9 +64,29 @@ Nested bash calls use normal permission checks and may require approval; the pac
 
 The UI summary displays filtered status fields, with up to 25 valid terminals for `ls`; invalid or excess rows are omitted. This is not a confidentiality boundary: the model receives the raw tool output, errors may appear raw in the UI, and restoring a session can briefly display raw output before the summary. Output may include sensitive data. Compact output is limited to 16 KiB and may be truncated into incomplete, non-JSON text; bash may impose its own limits or rewrite output. Malformed or oversized output may not produce a summary.
 
+## `hc_command` execution tool
+
+The agent can call `hc_command` with an `argv` array of separate strings, excluding the `hc` executable, for example `{"argv":["ls","--json"]}`. It validates arguments and invokes `hc` through nested `bash` with the original permission context. This is a bounded subset, **not full `hc` parity**; use `bash` directly, subject to its permissions, for unsupported commands, options or argument characters.
+
+Supported command forms are:
+
+- `run` (requires `--bg` before the program), `ls`, `get`, `read`, `wait`, `label`, `keep`, `keys`, `interrupt`, `put`, `schema`, `send`, `kill`, `rm`, `templates`, `exec` and `update`.
+- `file read`, `file edit`; `machine ls`, `add`, `update`, `rename`, `rm`; and `server start`, `stop`, `status`, `restart`.
+- `help` with up to two lowercase topics, standalone `--help`, `-h`, `--version`, `-V`, `--skill`, `--licenses`, and command or subcommand `--help`/`-h` forms.
+
+Only the implementation's allowlisted options and argument counts are accepted, not every option supported by `hc`; use `hc` help for syntax and check this tool's validation for its subset. `send --force` and `update --force` are rejected. `machine add` requires `--install` and a target or `--via`; `--via` also requires `--name`. Interactive `attach`, `connect` and `machine login`, streaming `events`, `file write` via stdin, `exec --stdin`/`-i` and foreground `run` are not supported. Arguments after the program in `run` or `exec` belong to that program, not to `hc`.
+
+Each argument is restricted to ASCII letters, digits, spaces and `_ . , / : @ + = -`. Quotes, shell metacharacters, backslashes, newlines and non-ASCII text are rejected even inside a single argument. In particular, Windows paths using backslashes and paths containing other unsupported characters cannot be passed; a forward-slash path is not automatically rejected just because it is a Windows path. Input must be a nonempty dense array of at most 128 strings, each at most 16,384 bytes and at most 65,536 bytes total; no other input fields are accepted.
+
+Nested `bash` calls use normal permission checks and may require approval; the package does not auto-allow `hc_command` operations. The separate `hc --skill` rule above is not a general `hc` allow. An approval may be generalized by Maki beyond the exact invocation, depending on the approval choice and host behavior; review its scope before approving. Trust the `hc` on `PATH`.
+
+The tool timeout is 140 seconds, with 130 seconds for the nested bash call; individual `hc` timeout options are separate. A timeout or error does not prove that an operation had no effect: commands can start or change terminals, send messages, edit files, manage machines or servers, or update software. Inspect state before retrying, especially for non-idempotent actions; background work may continue.
+
+Some recognized JSON responses receive a filtered UI summary (template and machine lists show at most 25 valid entries). Other output, errors, malformed or oversized JSON, and summary failures fall back to raw UI output, compacted to 16 KiB with control characters replaced. Summaries are not a privacy boundary: the model receives the tool output, and output or errors may contain sensitive data and may appear raw, including during session restoration or in transcript search. Compact model output is limited to 16 KiB and can be incomplete, non-JSON text; full mode preserves the returned text, but bash may impose its own limits or rewrite it. Restoration renders saved output without rerunning the command.
+
 ## Privacy and permissions
 
-The OSC bridge emits only the aggregate state and fixed app identifier, not prompts, answers, titles, paths, credentials or conversation content. The package requests `env` to read the two Herdr variables, `fs_write` to append fixed sequences to `/dev/tty`, and `run` for the `hc --skill` bash allow rule and `hc_status`. These grants are broader than those uses: `env` can expose environment secrets, `fs_write` can modify files, and `run` permits the plugin to start processes. Review the package and manifest before approving them. Existing installations updating to this version may be prompted to approve the additional `run` permission. It does not request conversation-content permissions or network access.
+The OSC bridge emits only the aggregate state and fixed app identifier, not prompts, answers, titles, paths, credentials or conversation content. The package requests `env` to read the two Herdr variables, `fs_write` to append fixed sequences to `/dev/tty`, and `run` for the `hc --skill` bash allow rule, `hc_status` and `hc_command`. These grants are broader than those uses: `env` can expose environment secrets, `fs_write` can modify files, and `run` permits the plugin to start processes. Review the package and manifest before approving them. Existing installations updating to this version may be prompted to approve the additional `run` permission. It does not request conversation-content permissions or network access.
 
 ## Verification and troubleshooting
 
