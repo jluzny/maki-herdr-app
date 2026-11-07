@@ -63,12 +63,11 @@ test("plugin starts through top-level spawn after load and preserves early event
     mock.hints[1].content,
     "For Herdr Desktop orchestration, use hc. Before coordinating terminals or agents, run the exact bash command hc --skill and read its output. "
       .. "For repeated hc blocked notifications, notify the user once per unresolved prompt; "
-      .. "if the prompt changes, inspect it again and notify as needed. Never bypass approvals. "
-      .. "The hc permission includes commands that start programs and control terminals; use them only as authorized."
+      .. "if the prompt changes, inspect it again and notify as needed. Never bypass approvals."
   )
   eq(#rules, 1)
   eq(rules[1].tool, "bash")
-  eq(rules[1].scope, "hc *")
+  eq(rules[1].scope, "hc --skill")
   eq(rules[1].effect, "allow")
   eq(#mock.queue, 0)
   eq(mock.live_calls, nil)

@@ -16,7 +16,7 @@ function M.start(host)
 
   host.api.register_permission_rule({
     tool = "bash",
-    scope = "hc *",
+    scope = "hc --skill",
     effect = "allow",
   })
 
@@ -24,8 +24,7 @@ function M.start(host)
     slot = "tool_usage",
     content = "For Herdr Desktop orchestration, use hc. Before coordinating terminals or agents, run the exact bash command hc --skill and read its output. "
       .. "For repeated hc blocked notifications, notify the user once per unresolved prompt; "
-      .. "if the prompt changes, inspect it again and notify as needed. Never bypass approvals. "
-      .. "The hc permission includes commands that start programs and control terminals; use them only as authorized.",
+      .. "if the prompt changes, inspect it again and notify as needed. Never bypass approvals.",
   })
 end
 
