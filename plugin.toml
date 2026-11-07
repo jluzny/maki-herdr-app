@@ -1,0 +1,5 @@
+min_maki_version = "0.7.1"
+
+[permissions]
+fs_write = true
+env = true
