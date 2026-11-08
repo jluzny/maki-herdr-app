@@ -2,6 +2,8 @@
 
 A lightweight Maki integration that brings live agent activity into the Herdr Desktop workspace. It publishes best-effort status for the current pane and gives agents controlled access to Herdr terminal operations. Do not use its status as critical operational telemetry.
 
+![Herdr Desktop showing Maki agent activity](assets/herdr-desktop.png)
+
 ## What it provides
 
 | Capability | Purpose |
