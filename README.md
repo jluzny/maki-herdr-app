@@ -1,6 +1,6 @@
 # Maki → Herdr Desktop status bridge
 
-A lightweight Maki integration that brings live agent activity into the Herdr Desktop workspace. It publishes best-effort status for the current pane and gives agents controlled access to Herdr terminal operations. Do not use its status as critical operational telemetry.
+A lightweight Maki integration that brings live agent activity into the Herdr Desktop workspace. Herdr can detect Maki from its terminal screen in a local pane. This package implements Herdr’s OSC 7501 status-reporting protocol to add a direct Maki status signal where screen detection is unavailable or unreliable, including a Desktop client connected to a remote core. It also provides controlled terminal tools. Status is best effort; do not use it as critical operational telemetry.
 
 ![Herdr Desktop workspace](assets/herdr-desktop-cover.png)
 
