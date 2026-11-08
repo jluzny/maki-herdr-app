@@ -1,14 +1,14 @@
 # Maki → Herdr Desktop status bridge
 
-A lightweight Maki integration that brings live agent activity into the Herdr Desktop workspace. It publishes one clear status for the current pane and gives agents controlled access to Herdr terminal operations.
+A lightweight Maki integration that brings live agent activity into the Herdr Desktop workspace. It publishes best-effort status for the current pane and gives agents controlled access to Herdr terminal operations. Do not use its status as critical operational telemetry; see the [verification record](docs/verification.md).
 
 ## What it provides
 
 | Capability | Purpose |
 | --- | --- |
-| Live activity status | Shows whether active Maki work is idle, working, waiting for input, or complete. |
+| Live activity status | Provides a best-effort view of active Maki work. |
 | Terminal visibility | Lets agents inspect known Herdr terminals through a constrained read interface. |
-| Controlled terminal operations | Lets agents run approved, noninteractive `hc` operations through a validated execution interface. |
+| Controlled terminal operations | Lets agents run allowlisted, noninteractive `hc` operations through a validated execution interface. |
 
 The package is an agent-side bridge. It does not modify, launch, or manage Herdr Desktop itself.
 
@@ -24,17 +24,17 @@ maki.pack.add({
 
 ## Status model
 
-The bridge maps live Maki-tab activity to Herdr pane status and emits changes only. See Herdr’s [agent status documentation](https://herdr.dev/tui/docs/agents/#how-status-works) for status semantics and presentation. The bridge reports one root OSC record per pane; avoid competing reporters in the same pane.
+The bridge maps live Maki-tab activity to one pane status and emits changes only. `needs_input` takes precedence as `blocked`, then active work as `working`; a recorded completed turn becomes `done` only when no live tab has an unknown state; all other cases, including unknown state without a completion, are `idle`. Herdr’s [agent status documentation](https://herdr.dev/tui/docs/agents/#how-status-works) provides background on how Herdr presents and rolls up status. The bridge reports one root OSC record per pane; avoid competing reporters in the same pane.
 
 ## Package tools
 
-The package exposes two tools that wrap a bounded subset of the external Herdr core CLI, `hc`, for terminal inspection and approved noninteractive operations. The wrappers narrow the available command surface, validate input, prevent interactive execution paths, and provide bounded summaries. Use direct bash for unsupported `hc` operations subject to normal permissions. It does not expose or wrap `herdr-app`; use that separate Desktop CLI directly through bash for pane and window arrangement.
+The package exposes two tools that wrap a bounded subset of the external Herdr core CLI, `hc`, for terminal inspection and allowlisted operations. The wrappers narrow the available command surface, validate input, reject specified interactive and stdin-dependent `hc` forms, and provide bounded summaries. They run through the existing bash permission context; the allowlist is not an approval bypass. Callers must ensure `exec` programs are noninteractive and finite; background `run` can host interactive programs. Use direct bash for unsupported `hc` operations subject to normal permissions. It does not expose or wrap `herdr-app`; use that separate Desktop CLI directly through bash for pane and window arrangement.
 
 | Need | Use |
 | --- | --- |
 | Bounded terminal inspection | `hc_status` (`ls`, `get`, `wait`) |
 | Allowed noninteractive `hc` command | `hc_command` — an execute tool; mutating operations need explicit user authorization |
-| Complete external CLI syntax and constraints | [Tool reference](docs/tools.md) |
+| Package-tool reference | [Tool reference](docs/tools.md) |
 
 Read [docs/tools.md](docs/tools.md) for input schemas, examples, operation allowlists, command-input constraints, output handling, prompt integration, and safety limits. Read `hc --skill` and `herdr-app --skill` for external CLI syntax rather than treating this package as their full manual.
 
@@ -42,7 +42,7 @@ Read [docs/tools.md](docs/tools.md) for input schemas, examples, operation allow
 
 The bridge emits only aggregate state and a fixed app identifier, not prompts, answers, titles, paths, credentials, or conversation content. It requests `env`, `fs_write`, and `run`; these grants are broader than the package's intended uses. Review the source and manifest before approval.
 
-Raw tool output and errors can contain sensitive data. Summaries are not a confidentiality boundary, and restore or transcript search can expose raw content. Never bypass approvals or use `--force` to avoid a permission decision. Reuse an existing terminal only when explicitly requested: inspect it, confirm authorization, and ask when intent is ambiguous.
+Raw tool output and errors can contain sensitive data. Summaries are not a confidentiality boundary, and restore or transcript search can expose raw content. `run`, `exec`, `send`, and `keys` can start work or deliver input; `hc_command` can also modify or remove resources. Never bypass approvals or use `--force` to avoid a permission decision. Reuse an existing terminal only when explicitly requested: inspect it, confirm authorization, and ask when intent is ambiguous.
 
 ## Operational notes
 

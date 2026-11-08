@@ -4,7 +4,7 @@ This package exposes two Maki tools, both wrapping a bounded subset of the exter
 
 | Need | Use | Boundary |
 | --- | --- | --- |
-| Inspect bounded terminal status | `hc_status` | Read-only `ls`, `get`, or `wait` |
+| Inspect bounded terminal status | `hc_status` | Read-oriented `ls`, `get`, or `wait` |
 | Run an allowed noninteractive `hc` operation | `hc_command` | Validated `argv` envelope |
 | Use an unsupported `hc` operation | Direct `bash` | Subject to normal permissions |
 | Arrange Herdr Desktop panes or windows | Direct `bash` with `herdr-app` | External CLI; not wrapped by this package |
@@ -13,7 +13,7 @@ Read `hc --skill` for complete `hc` syntax. For Desktop work, use `herdr-app` di
 
 ## `hc_status`
 
-**Purpose:** inspect terminal state with a small, read-oriented interface. It is a Maki `read` tool with `run` permission and invokes nested `bash`; normal bash permission checks still apply.
+**Purpose:** inspect terminal state with a small, read-oriented interface. It is a Maki `read` tool with `run` permission and invokes nested `bash`; normal bash permission checks still apply. It does not run programs in a target terminal or send terminal input, but the underlying `hc` calls can have operational side effects such as starting the core or marking child news as seen.
 
 ### Input
 
@@ -47,7 +47,7 @@ A summary is not a confidentiality boundary. Raw output and errors can contain s
 
 ## `hc_command`
 
-**Purpose:** run a validated, noninteractive subset of `hc`. It is a Maki `execute` tool with `run` permission and calls nested `bash` under the original permission context. It is not full `hc` parity.
+**Purpose:** run a validated subset of `hc`. It is a Maki `execute` tool with `run` permission and calls nested `bash` under the original permission context. It is not full `hc` parity. It rejects specified interactive and stdin-dependent `hc` forms, but cannot establish that a program run through `exec` or background `run` is noninteractive or finite.
 
 ### Input and normalization
 
@@ -61,9 +61,9 @@ Supply exactly one object field, `argv`: a dense, nonempty array of one to 128 s
 {"argv":["run","--bg","--name","worker","my-program","--fast"]}
 ```
 
-Each argument is at most 16,384 bytes, the total is at most 65,536 bytes, and NUL is rejected. Supported characters are ASCII letters, digits, spaces, and `_ . , / : @ + = - ' ( )`. U+2018 and U+2019 apostrophes are normalized to ASCII `'`; other non-ASCII characters are rejected. Double quotes, backslashes, newlines, and other shell metacharacters are rejected.
+Each argument is at most 16,384 bytes, and the normalized arguments together are at most 65,536 bytes; NUL is rejected. Supported characters are ASCII letters, digits, spaces, and `_ . , / : @ + = - ' ( )`. U+2018 and U+2019 apostrophes are normalized to ASCII `'` before the total is measured; other non-ASCII characters are rejected. Double quotes, backslashes, newlines, and other shell metacharacters are rejected.
 
-The allowlist validates command shape, options, values, and positional count before quoting every argument for `hc`. Use `hc --skill` or `hc help` to determine the upstream syntax for an allowed family.
+The allowlist validates command shape, accepted option names, option-value presence, and positional count before quoting every argument for `hc`. It generally leaves option-value semantics to `hc`. Use `hc --skill` or `hc help` to determine the upstream syntax for an allowed family.
 
 ### Allowed operations
 
@@ -78,11 +78,11 @@ The allowlist validates command shape, options, values, and positional count bef
 | Server | `server start`, `server stop`, `server status`, `server restart` |
 | Update | `update` without `--force` |
 
-Only the command-specific options in the package allowlist are accepted. `machine add` requires `--install` and either an explicit target or `--via`; `--via` additionally requires `--name`. `send --force` and `update --force` are rejected.
+Only command-specific options before the program in `run` or `exec` are checked against the package allowlist. After that program position, arguments are passed through as program arguments. `machine add` requires `--install` and either an explicit target or `--via`; `--via` additionally requires `--name`. `send --force` and `update --force` are rejected.
 
 ### Rejected and unsupported operations
 
-`attach`, `connect`, and `machine login` are interactive and rejected. `events` and foreground `run` stream output and are unsupported. `file write` needs stdin and is unsupported, as are stdin-dependent file operations and `exec --stdin` / `exec -i`. Any unlisted command or option is rejected. For these operations, use direct bash only when the normal permission flow authorizes it.
+`attach`, `connect`, and `machine login` are interactive and rejected. `events` and foreground `run` stream output and are unsupported. `file write` needs stdin and is unsupported, as are stdin-dependent file operations and `exec --stdin` / `exec -i`. Any unlisted `hc` command or option before the program position in `run` or `exec` is rejected. For these operations, use direct bash only when the normal permission flow authorizes it.
 
 ### Output and safety
 
