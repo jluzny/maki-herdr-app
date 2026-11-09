@@ -1,4 +1,5 @@
 local hc_status = require("maki_herdr_app.hc_status")
+local HC = 'PATH="${HC_INSTALL_DIR:-$HOME/.local/bin}:$PATH" hc'
 local ctx = {
   output_mode = function()
     return "compact"
@@ -125,12 +126,12 @@ test("hc status forwards exact nested bash commands and original permission cont
     end,
   }
   local cases = {
-    { { action = "ls" }, "hc ls --json", 10 },
-    { { action = "get", target = "machine/name_1.2" }, "hc get --json -- machine/name_1.2", 10 },
-    { { action = "get", target = "--help" }, "hc get --json -- --help", 10 },
-    { { action = "wait", target = "-x" }, "hc wait --json --timeout 30 -- -x", 40 },
-    { { action = "wait", target = "a", timeout = 1 }, "hc wait --json --timeout 1 -- a", 11 },
-    { { action = "wait", target = "a", timeout = 120 }, "hc wait --json --timeout 120 -- a", 130 },
+    { { action = "ls" }, HC .. " ls --json", 10 },
+    { { action = "get", target = "machine/name_1.2" }, HC .. " get --json -- machine/name_1.2", 10 },
+    { { action = "get", target = "--help" }, HC .. " get --json -- --help", 10 },
+    { { action = "wait", target = "-x" }, HC .. " wait --json --timeout 30 -- -x", 40 },
+    { { action = "wait", target = "a", timeout = 1 }, HC .. " wait --json --timeout 1 -- a", 11 },
+    { { action = "wait", target = "a", timeout = 120 }, HC .. " wait --json --timeout 120 -- a", 130 },
   }
   for i, case in ipairs(cases) do
     local result = spec.handler(case[1], ctx)
@@ -217,7 +218,7 @@ test("hc status target validation rejects shell metacharacters, controls, traver
   end
   reject(spec, mock, { action = "get" }, target_error)
   spec.handler({ action = "get", target = string.rep("a", 128) }, ctx)
-  eq(mock.calls[1].args.command, "hc get --json -- " .. string.rep("a", 128))
+  eq(mock.calls[1].args.command, HC .. " get --json -- " .. string.rep("a", 128))
 end)
 
 test("hc wait enforces integer timeout limits and rejects non-finite values", function()

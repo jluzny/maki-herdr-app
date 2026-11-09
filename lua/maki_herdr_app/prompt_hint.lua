@@ -22,7 +22,7 @@ function M.start(host)
 
   host.api.register_prompt_hint({
     slot = "tool_usage",
-    content = "For Herdr Desktop, read 'hc --skill' via bash. Prefer hc_status and hc_command for other supported hc calls. Check PATH for 'herdr-app'; if absent in WSL, check 'herdr-app.exe'. Read the available CLI's --skill before Desktop operations. Do not report a missing CLI by itself; report any task you cannot complete.",
+    content = "For Herdr Desktop, read 'hc --skill' via bash. Prefer hc_status and hc_command for other supported hc calls. Check PATH for 'herdr-app'; if absent in WSL, check 'herdr-app.exe'. Read the available CLI's --skill before Desktop operations. If 'hc' is missing from PATH, try '~/.local/bin/hc' or set 'HC_INSTALL_DIR'. Do not report a missing CLI by itself; report any task you cannot complete.",
   })
 end
 

@@ -61,7 +61,7 @@ Supply exactly one object field, `argv`: a dense, nonempty array of one to 128 s
 {"argv":["run","--bg","--name","worker","my-program","--fast"]}
 ```
 
-Each argument is at most 16,384 bytes, and the normalized arguments together are at most 65,536 bytes; NUL is rejected. Supported characters are ASCII letters, digits, spaces, and `_ . , / : @ + = - ' ( )`. U+2018 and U+2019 apostrophes are normalized to ASCII `'` before the total is measured; other non-ASCII characters are rejected. Double quotes, backslashes, newlines, and other shell metacharacters are rejected.
+Each argument is at most 16,384 bytes, and the normalized arguments together are at most 65,536 bytes; NUL is rejected. Arguments other than the final `send` message are limited to ASCII letters, digits, spaces, and `_ . , / : @ + = - ' ( )`. U+2018 and U+2019 apostrophes are normalized to ASCII `'` before the total is measured; other non-ASCII characters are rejected in those positions. The `send` message accepts arbitrary printable text plus newline and tab; other C0/DEL controls, C1 controls, and bidirectional formatting characters are rejected. Every argument is single-quoted for the shell, so argument boundaries and literal characters are preserved. The wrapper prefixes commands with `$HC_INSTALL_DIR` (default `~/.local/bin`) on `PATH`, so `hc` is found even when the launching environment has a minimal `PATH`.
 
 The allowlist validates command shape, accepted option names, option-value presence, and positional count before quoting every argument for `hc`. It generally leaves option-value semantics to `hc`. Use `hc --skill` or `hc help` to determine the upstream syntax for an allowed family.
 

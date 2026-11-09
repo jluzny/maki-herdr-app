@@ -2,7 +2,7 @@ local prompt_hint = require("maki_herdr_app.prompt_hint")
 local mock_host = require("mock_host")
 
 local hint =
-  "For Herdr Desktop, read 'hc --skill' via bash. Prefer hc_status and hc_command for other supported hc calls. Check PATH for 'herdr-app'; if absent in WSL, check 'herdr-app.exe'. Read the available CLI's --skill before Desktop operations. Do not report a missing CLI by itself; report any task you cannot complete."
+  "For Herdr Desktop, read 'hc --skill' via bash. Prefer hc_status and hc_command for other supported hc calls. Check PATH for 'herdr-app'; if absent in WSL, check 'herdr-app.exe'. Read the available CLI's --skill before Desktop operations. If 'hc' is missing from PATH, try '~/.local/bin/hc' or set 'HC_INSTALL_DIR'. Do not report a missing CLI by itself; report any task you cannot complete."
 
 local function new_mock()
   local mock = mock_host.new()

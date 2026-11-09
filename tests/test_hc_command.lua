@@ -1,4 +1,5 @@
 local hc_command = require("maki_herdr_app.hc_command")
+local HC_PATH = 'PATH="${HC_INSTALL_DIR:-$HOME/.local/bin}:$PATH"'
 
 local ctx = {
   output_mode = function()
@@ -10,6 +11,18 @@ local full_ctx = {
     return "full"
   end,
 }
+
+local function sq(value)
+  return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+local function cmd(...)
+  local parts = { HC_PATH, "hc" }
+  for _, value in ipairs({ ... }) do
+    parts[#parts + 1] = sq(value)
+  end
+  return table.concat(parts, " ")
+end
 
 local function encode64(text)
   local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -147,7 +160,7 @@ test("hc command delegates to bash with the original permission context", functi
   local call = mock.calls[1]
   eq(call.ctx, context)
   eq(call.name, "bash")
-  eq(call.args.command, [[hc "send" "--json" "terminal" "it's (ready)"]])
+  eq(call.args.command, cmd("send", "--json", "terminal", "it's (ready)"))
   eq(call.args.timeout, 130)
   eq(call.args.description, "Run hc send")
   eq(call.opts.timeout, 130)
@@ -159,43 +172,43 @@ test("hc command delegates to bash with the original permission context", functi
   eq(count, 2, "no permission bypass options")
 end)
 
-test("hc command accepts only the shell-safe alphabet and preserves argument boundaries", function()
+test("hc command quotes arguments safely and preserves argument boundaries", function()
   local mock, spec = setup()
   local result = spec.handler({ argv = { "exec", "program", "AZaz09 _.,/:@+=-'()", "two words", "--stdin" } }, ctx)
   eq(result.is_error, nil)
   eq(#mock.calls, 1)
-  eq(mock.calls[1].args.command, [[hc "exec" "program" "AZaz09 _.,/:@+=-'()" "two words" "--stdin"]])
+  eq(mock.calls[1].args.command, cmd("exec", "program", "AZaz09 _.,/:@+=-'()", "two words", "--stdin"))
   result = spec.handler({ argv = { "send", "terminal", "" } }, ctx)
   eq(result.is_error, nil)
-  eq(mock.calls[2].args.command, 'hc "send" "terminal" ""')
+  eq(mock.calls[2].args.command, cmd("send", "terminal", ""))
+  result = spec.handler({ argv = { "send", "terminal", "quote ' and $(id)" } }, ctx)
+  eq(result.is_error, nil)
+  eq(mock.calls[3].args.command, cmd("send", "terminal", "quote ' and $(id)"))
 end)
 
 test("hc command accepts literal apostrophes and parentheses in every argument position", function()
   local mock, spec = setup()
   local cases = {
-    { { "send", "terminal", "'" }, [[hc "send" "terminal" "'"]] },
-    { { "send", "terminal", "(" }, [[hc "send" "terminal" "("]] },
-    { { "send", "terminal", ")" }, [[hc "send" "terminal" ")"]] },
-    { { "send", "term(1)", "it's (ready)" }, [[hc "send" "term(1)" "it's (ready)"]] },
-    { { "exec", "--cwd", "/tmp/it's (here)", "program" }, [[hc "exec" "--cwd" "/tmp/it's (here)" "program"]] },
-    { { "exec", "--cwd=/tmp/it's (here)", "program" }, [[hc "exec" "--cwd=/tmp/it's (here)" "program"]] },
-    { { "run", "--bg", "program", "'", "(one)", "two words" }, [[hc "run" "--bg" "program" "'" "(one)" "two words"]] },
-    {
-      { "file", "edit", "--old=it's (old)", "--new", "it's (new)", "file (1)" },
-      [[hc "file" "edit" "--old=it's (old)" "--new" "it's (new)" "file (1)"]],
-    },
+    { "send", "terminal", "'" },
+    { "send", "terminal", "(" },
+    { "send", "terminal", ")" },
+    { "send", "term(1)", "it's (ready)" },
+    { "exec", "--cwd", "/tmp/it's (here)", "program" },
+    { "exec", "--cwd=/tmp/it's (here)", "program" },
+    { "run", "--bg", "program", "'", "(one)", "two words" },
+    { "file", "edit", "--old=it's (old)", "--new", "it's (new)", "file (1)" },
   }
-  for i, case in ipairs(cases) do
-    local result = spec.handler({ argv = case[1] }, ctx)
+  for i, argv in ipairs(cases) do
+    local result = spec.handler({ argv = argv }, ctx)
     eq(result.is_error, nil)
-    eq(mock.calls[i].args.command, case[2])
+    eq(mock.calls[i].args.command, cmd(table.unpack(argv)))
   end
   local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 _.,/:@+=-'()"
   for i = 1, #alphabet do
     local char = alphabet:sub(i, i)
     local result = spec.handler({ argv = { "send", "terminal", "x" .. char .. "y" } }, ctx)
     eq(result.is_error, nil, "allowed byte " .. string.byte(char))
-    eq(mock.calls[#mock.calls].args.command, 'hc "send" "terminal" "x' .. char .. 'y"')
+    eq(mock.calls[#mock.calls].args.command, cmd("send", "terminal", "x" .. char .. "y"))
   end
 end)
 
@@ -208,13 +221,13 @@ test("hc command normalizes typographic apostrophes before validation and quotin
   for i, case in ipairs(cases) do
     local result = spec.handler({ argv = { "send", "terminal", "it" .. case[1] .. "s ready" } }, ctx)
     eq(result.is_error, nil)
-    eq(mock.calls[i].args.command, [[hc "send" "terminal" "it's ready"]])
+    eq(mock.calls[i].args.command, cmd("send", "terminal", "it's ready"))
   end
 end)
 
-test("hc command still rejects shell syntax adjacent to apostrophes and parentheses", function()
+test("hc command allows shell syntax in send text but still quotes it", function()
   local mock, spec = setup()
-  for _, value in ipairs({
+  local values = {
     "$(id)",
     "`id`",
     "'$(id)'",
@@ -228,25 +241,22 @@ test("hc command still rejects shell syntax adjacent to apostrophes and parenthe
     "(x\ny)",
     "(é)",
     "(x\226\128\156y)",
-    "(x\226\128\174y)",
     "(x%PATH%)",
     "(x!y!)",
     "(x^y)",
-  }) do
-    reject(mock, spec, { argv = { "send", "terminal", value } })
+  }
+  for i, value in ipairs(values) do
+    local result = spec.handler({ argv = { "send", "terminal", value } }, ctx)
+    eq(result.is_error, nil, "send text " .. i)
+    eq(mock.calls[i].args.command, cmd("send", "terminal", value))
+  end
+  for _, value in ipairs({ "$(id)", "`id`", "x;id", "(x\ny)", "(é)" }) do
     reject(mock, spec, { argv = { "exec", "--cwd", value, "program" } })
     reject(mock, spec, { argv = { "exec", "--cwd=" .. value, "program" } })
   end
-  local result = spec.handler({ argv = { "send", "terminal", "it's $HOME (here)" } }, ctx)
-  eq(
-    result.llm_output,
-    "error: unsupported argument character; only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported"
-  )
-  eq(result.is_error, true)
-  eq(#mock.calls, 0)
 end)
 
-test("hc command rejects unsafe characters in arguments and flag values", function()
+test("hc command rejects unsafe characters outside send text and control characters in send text", function()
   local mock, spec = setup()
   for _, value in ipairs({
     "%PATH%",
@@ -273,18 +283,55 @@ test("hc command rejects unsafe characters in arguments and flag values", functi
     "#",
     "x\0y",
   }) do
-    reject(mock, spec, { argv = { "send", "terminal", value } })
     reject(mock, spec, { argv = { "exec", "--cwd", value, "program" } })
     reject(mock, spec, { argv = { "exec", "--cwd=" .. value, "program" } })
   end
+  eq(#mock.calls, 0, "strict arguments must not invoke bash")
+  for _, value in ipairs({
+    "%PATH%",
+    "!bang!",
+    'a"b',
+    "é",
+    "line\nnext",
+    "tab\tnext",
+    "$(id)",
+    "`id`",
+    "x;id",
+    "x|id",
+    "x&id",
+    "*?[]",
+    "\\",
+    "~",
+    "#",
+  }) do
+    local result = spec.handler({ argv = { "send", "terminal", value } }, ctx)
+    eq(result.is_error, nil, "send text should be accepted: " .. value)
+  end
+  for _, value in ipairs({
+    "x\0y",
+    "line\rnext",
+    "bell\7x",
+    "esc\27x",
+    "del\127x",
+    "bidi\226\128\174x",
+    "c1\194\128x",
+  }) do
+    reject(mock, spec, { argv = { "send", "terminal", value } })
+  end
   for byte = 1, 255 do
     local char = string.char(byte)
-    if not char:match("^[a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]$") then
+    local control = byte == 0 or (byte < 32 and byte ~= 9 and byte ~= 10) or byte == 127
+    if control then
       reject(mock, spec, { argv = { "send", "terminal", "x" .. char .. "y" } })
+    else
+      local before = #mock.calls
+      spec.handler({ argv = { "send", "terminal", "x" .. char .. "y" } }, ctx)
+      eq(#mock.calls, before + 1, "send byte " .. byte)
+    end
+    if not char:match("^[a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]$") then
       reject(mock, spec, { argv = { "exec", "--env=x" .. char .. "y", "program" } })
     end
   end
-  eq(#mock.calls, 0)
 end)
 
 test("hc command rejects malformed argv and enforces size bounds before bash", function()
@@ -417,9 +464,9 @@ test("hc command accepts supported finite commands and flags", function()
     local result = spec.handler({ argv = argv }, ctx)
     eq(result.is_error, nil, "valid case " .. i)
     eq(#mock.calls, i)
-    local parts = { "hc" }
+    local parts = { HC_PATH, "hc" }
     for _, arg in ipairs(argv) do
-      parts[#parts + 1] = '"' .. arg .. '"'
+      parts[#parts + 1] = sq(arg)
     end
     eq(mock.calls[i].args.command, table.concat(parts, " "), "valid case " .. i)
   end

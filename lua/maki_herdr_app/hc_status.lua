@@ -7,6 +7,8 @@ local MAX_JSON = 1024 * 1024
 local MAX_COMPACT = 16 * 1024
 local DEFAULT_TIMEOUT = 30
 local MAX_TIMEOUT = 120
+local HC_PATH = 'PATH="${HC_INSTALL_DIR:-$HOME/.local/bin}:$PATH"'
+local HC = HC_PATH .. " hc"
 
 local function valid_target(target)
   if type(target) ~= "string" or #target == 0 or #target > MAX_TARGET then
@@ -28,7 +30,7 @@ local function command_for(input)
     if input.target ~= nil or input.timeout ~= nil then
       return nil, "ls does not accept target or timeout"
     end
-    return "hc ls --json", 10
+    return HC .. " ls --json", 10
   end
   if input.action ~= "get" and input.action ~= "wait" then
     return nil, "action must be ls, get, or wait"
@@ -41,7 +43,7 @@ local function command_for(input)
     if input.timeout ~= nil then
       return nil, "get does not accept timeout"
     end
-    return "hc get --json -- " .. input.target, 10
+    return HC .. " get --json -- " .. input.target, 10
   end
   local timeout = input.timeout
   if timeout == nil then
@@ -50,7 +52,7 @@ local function command_for(input)
   if type(timeout) ~= "number" or timeout ~= math.floor(timeout) or timeout < 1 or timeout > MAX_TIMEOUT then
     return nil, "timeout must be an integer from 1 to 120 seconds"
   end
-  return "hc wait --json --timeout " .. tostring(timeout) .. " -- " .. input.target, timeout + 10
+  return HC .. " wait --json --timeout " .. tostring(timeout) .. " -- " .. input.target, timeout + 10
 end
 
 local states = { idle = true, working = true, done = true, blocked = true, error = true }

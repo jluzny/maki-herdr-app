@@ -8,6 +8,7 @@ local MAX_COMPACT = 16384
 local MAX_JSON = 1024 * 1024
 local MAX_ROWS = 25
 local TIMEOUT = 130
+local HC_PATH = 'PATH="${HC_INSTALL_DIR:-$HOME/.local/bin}:$PATH"'
 
 local specs = {
   run = {
@@ -107,7 +108,39 @@ local function normalize_apostrophes(s)
 end
 
 local function quote(s)
-  return '"' .. s .. '"'
+  return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
+local bidi_controls = {
+  "\216\156", -- U+061C ARABIC LETTER MARK
+  "\226\128\142", -- U+200E LEFT-TO-RIGHT MARK
+  "\226\128\143", -- U+200F RIGHT-TO-LEFT MARK
+  "\226\128\170", -- U+202A LEFT-TO-RIGHT EMBEDDING
+  "\226\128\171", -- U+202B RIGHT-TO-LEFT EMBEDDING
+  "\226\128\172", -- U+202C POP DIRECTIONAL FORMATTING
+  "\226\128\173", -- U+202D LEFT-TO-RIGHT OVERRIDE
+  "\226\128\174", -- U+202E RIGHT-TO-LEFT OVERRIDE
+  "\226\129\166", -- U+2066 LEFT-TO-RIGHT ISOLATE
+  "\226\129\167", -- U+2067 RIGHT-TO-LEFT ISOLATE
+  "\226\129\168", -- U+2068 FIRST STRONG ISOLATE
+  "\226\129\169", -- U+2069 POP DIRECTIONAL ISOLATE
+}
+
+local function has_forbidden_unicode(s)
+  for i = 1, #s do
+    if s:byte(i) == 0xC2 then
+      local next_byte = s:byte(i + 1)
+      if next_byte and next_byte >= 0x80 and next_byte <= 0x9F then
+        return true
+      end
+    end
+  end
+  for _, sequence in ipairs(bidi_controls) do
+    if s:find(sequence, 1, true) then
+      return true
+    end
+  end
+  return false
 end
 
 local function validate(input)
@@ -134,10 +167,6 @@ local function validate(input)
     end
     v = normalize_apostrophes(v)
     normalized[k] = v
-    if v:find("[^a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]") then
-      return nil,
-        "unsupported argument character; only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported"
-    end
     count = count + 1
     total = total + #v
   end
@@ -151,6 +180,7 @@ local function validate(input)
     end
   end
   local command, start = argv[1], 2
+  local positional = {}
   local help_only = (count == 2 and (argv[2] == "--help" or argv[2] == "-h"))
     or (
       count == 3
@@ -232,6 +262,7 @@ local function validate(input)
         end
       else
         positions = positions + 1
+        positional[positions] = i
         if arg == "" and (positions == 1 or command ~= "send") then
           return nil, "empty positional argument for " .. command
         end
@@ -254,7 +285,28 @@ local function validate(input)
       return nil, "machine add --via requires --name"
     end
   end
-  local parts = { "hc" }
+  local send_message
+  if command == "send" and positional[2] then
+    send_message = positional[2]
+  end
+  for i = 1, count do
+    local value = argv[i]
+    if i == send_message then
+      for byte in value:gmatch(".") do
+        local code = string.byte(byte)
+        if (code < 32 and code ~= 9 and code ~= 10) or code == 127 then
+          return nil, "send text may not contain control characters other than newline or tab"
+        end
+      end
+      if has_forbidden_unicode(value) then
+        return nil, "send text may not contain bidirectional or C1 control characters"
+      end
+    elseif value:find("[^a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]") then
+      return nil,
+        "unsupported argument character; only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported"
+    end
+  end
+  local parts = { HC_PATH, "hc" }
   for i = 1, count do
     parts[#parts + 1] = quote(argv[i])
   end
@@ -724,7 +776,7 @@ function M.start(host)
           items = { type = "string", maxLength = MAX_ARG },
           minItems = 1,
           maxItems = MAX_ARGS,
-          description = "hc arguments as separate strings, starting with a supported command. Only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported; double quotes, other shell metacharacters, backslashes, newlines and non-ASCII text are unsupported.",
+          description = "hc arguments as separate strings, starting with a supported command. Except for the final message of `send`, arguments are limited to ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) ; the send message may contain arbitrary printable text, newline, and tab.",
         },
       },
       required = { "argv" },
