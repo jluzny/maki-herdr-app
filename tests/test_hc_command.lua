@@ -1028,16 +1028,14 @@ end)
 
 test("hc command sanitizes bidi controls in labels, updates, and raw fallbacks", function()
   local mock, spec = setup()
-  local controls = "\216\156\226\128\142\226\128\143\226\128\170\226\128\171\226\128\172\226\128\173\226\128\174\226\129\166\226\129\167\226\129\168\226\129\169"
+  local controls =
+    "\216\156\226\128\142\226\128\143\226\128\170\226\128\171\226\128\172\226\128\173\226\128\174\226\129\166\226\129\167\226\129\168\226\129\169"
   local sanitized = string.rep("?", 12)
   local label = { argv = { "label", "t1", "key=value" } }
   mock.fixtures.labels = {
     value = { address = "t1", labels = { ["key" .. controls] = "value" .. controls } },
   }
-  eq(
-    lines(spec.restore(label, "labels", false, ctx)),
-    "Terminal t1\nLabel key" .. sanitized .. " = value" .. sanitized
-  )
+  eq(lines(spec.restore(label, "labels", false, ctx)), "Terminal t1\nLabel key" .. sanitized .. " = value" .. sanitized)
   local update = { argv = { "update" } }
   mock.fixtures.update_bidi = {
     value = { updated = true, now = "now" .. controls, release = "release" .. controls },

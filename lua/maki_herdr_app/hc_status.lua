@@ -286,7 +286,10 @@ function M.start(host)
         local err = "error: bash returned invalid output"
         return { llm_output = err, is_error = true, body = safe_summary(host, input, err, true) }
       end
-      return { llm_output = full and output or display.compact(output, MAX_COMPACT), body = safe_summary(host, input, output, false) }
+      return {
+        llm_output = full and output or display.compact(output, MAX_COMPACT),
+        body = safe_summary(host, input, output, false),
+      }
     end,
   })
 end

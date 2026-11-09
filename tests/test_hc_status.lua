@@ -287,7 +287,8 @@ end)
 
 test("hc status sanitizes bidi controls in raw and error fallbacks", function()
   local mock, spec = setup()
-  local controls = "\216\156\226\128\142\226\128\143\226\128\170\226\128\171\226\128\172\226\128\173\226\128\174\226\129\166\226\129\167\226\129\168\226\129\169"
+  local controls =
+    "\216\156\226\128\142\226\128\143\226\128\170\226\128\171\226\128\172\226\128\173\226\128\174\226\129\166\226\129\167\226\129\168\226\129\169"
   local sanitized = string.rep("?", 12)
   local input = { action = "get", target = "t1" }
   eq(lines(spec.restore(input, "raw" .. controls, false, ctx)), "hc output is not structured JSON.")
