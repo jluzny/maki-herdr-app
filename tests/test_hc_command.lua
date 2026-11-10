@@ -225,7 +225,7 @@ test("hc command normalizes typographic apostrophes before validation and quotin
   end
 end)
 
-test("hc command allows shell syntax in send text but still quotes it", function()
+test("hc command quotes printable text literally in every argument position", function()
   local mock, spec = setup()
   local values = {
     "$(id)",
@@ -245,49 +245,26 @@ test("hc command allows shell syntax in send text but still quotes it", function
     "(x!y!)",
     "(x^y)",
   }
-  for i, value in ipairs(values) do
-    local result = spec.handler({ argv = { "send", "terminal", value } }, ctx)
-    eq(result.is_error, nil, "send text " .. i)
-    eq(mock.calls[i].args.command, cmd("send", "terminal", value))
+  local calls = 0
+  local function accept(argv)
+    calls = calls + 1
+    local result = spec.handler({ argv = argv }, ctx)
+    eq(result.is_error, nil, "argv " .. calls)
+    eq(#mock.calls, calls)
+    eq(mock.calls[calls].args.command, cmd(table.unpack(argv)))
   end
-  for _, value in ipairs({ "$(id)", "`id`", "x;id", "(x\ny)", "(é)" }) do
-    reject(mock, spec, { argv = { "exec", "--cwd", value, "program" } })
-    reject(mock, spec, { argv = { "exec", "--cwd=" .. value, "program" } })
+  for _, value in ipairs(values) do
+    accept({ "send", "terminal", value })
+    accept({ "exec", "--cwd", value, "program" })
+    accept({ "exec", "--cwd=" .. value, "program" })
+    accept({ "file", "edit", "--old=" .. value, "--new", value, "file.txt" })
+    accept({ "run", "--bg", "program", value })
   end
 end)
 
-test("hc command rejects unsafe characters outside send text and control characters in send text", function()
+test("hc command rejects control characters and bidi formatting in every argument", function()
   local mock, spec = setup()
-  for _, value in ipairs({
-    "%PATH%",
-    "!bang!",
-    "^caret",
-    'a"b',
-    "é",
-    "a\226\128\156b",
-    "a\226\128\174b",
-    "line\nnext",
-    "line\rnext",
-    "tab\tnext",
-    "$(id)",
-    "`id`",
-    "x;id",
-    "x|id",
-    "x&id",
-    "x>id",
-    "x<id",
-    "*?[]",
-    "\\",
-    "{x}",
-    "~",
-    "#",
-    "x\0y",
-  }) do
-    reject(mock, spec, { argv = { "exec", "--cwd", value, "program" } })
-    reject(mock, spec, { argv = { "exec", "--cwd=" .. value, "program" } })
-  end
-  eq(#mock.calls, 0, "strict arguments must not invoke bash")
-  for _, value in ipairs({
+  local printable = {
     "%PATH%",
     "!bang!",
     'a"b',
@@ -303,9 +280,17 @@ test("hc command rejects unsafe characters outside send text and control charact
     "\\",
     "~",
     "#",
-  }) do
-    local result = spec.handler({ argv = { "send", "terminal", value } }, ctx)
-    eq(result.is_error, nil, "send text should be accepted: " .. value)
+  }
+  for _, value in ipairs(printable) do
+    for _, argv in ipairs({
+      { "send", "terminal", value },
+      { "exec", "--cwd", value, "program" },
+      { "exec", "--cwd=" .. value, "program" },
+      { "file", "edit", "--old=" .. value, "--new", value, "file.txt" },
+    }) do
+      local result = spec.handler({ argv = argv }, ctx)
+      eq(result.is_error, nil, "printable value should be accepted: " .. value)
+    end
   end
   for _, value in ipairs({
     "x\0y",
@@ -317,19 +302,20 @@ test("hc command rejects unsafe characters outside send text and control charact
     "c1\194\128x",
   }) do
     reject(mock, spec, { argv = { "send", "terminal", value } })
+    reject(mock, spec, { argv = { "exec", "--cwd", value, "program" } })
+    reject(mock, spec, { argv = { "exec", "--env=x" .. value, "program" } })
   end
   for byte = 1, 255 do
     local char = string.char(byte)
-    local control = byte == 0 or (byte < 32 and byte ~= 9 and byte ~= 10) or byte == 127
+    local control = byte < 32 and byte ~= 9 and byte ~= 10 or byte == 127
     if control then
       reject(mock, spec, { argv = { "send", "terminal", "x" .. char .. "y" } })
+      reject(mock, spec, { argv = { "exec", "--env=x" .. char .. "y", "program" } })
     else
       local before = #mock.calls
       spec.handler({ argv = { "send", "terminal", "x" .. char .. "y" } }, ctx)
-      eq(#mock.calls, before + 1, "send byte " .. byte)
-    end
-    if not char:match("^[a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]$") then
-      reject(mock, spec, { argv = { "exec", "--env=x" .. char .. "y", "program" } })
+      spec.handler({ argv = { "exec", "--env=x" .. char .. "y", "program" } }, ctx)
+      eq(#mock.calls, before + 2, "byte " .. byte)
     end
   end
 end)

@@ -180,7 +180,6 @@ local function validate(input)
     end
   end
   local command, start = argv[1], 2
-  local positional = {}
   local help_only = (count == 2 and (argv[2] == "--help" or argv[2] == "-h"))
     or (
       count == 3
@@ -262,7 +261,6 @@ local function validate(input)
         end
       else
         positions = positions + 1
-        positional[positions] = i
         if arg == "" and (positions == 1 or command ~= "send") then
           return nil, "empty positional argument for " .. command
         end
@@ -285,25 +283,16 @@ local function validate(input)
       return nil, "machine add --via requires --name"
     end
   end
-  local send_message
-  if command == "send" and positional[2] then
-    send_message = positional[2]
-  end
   for i = 1, count do
     local value = argv[i]
-    if i == send_message then
-      for byte in value:gmatch(".") do
-        local code = string.byte(byte)
-        if (code < 32 and code ~= 9 and code ~= 10) or code == 127 then
-          return nil, "send text may not contain control characters other than newline or tab"
-        end
+    for byte in value:gmatch(".") do
+      local code = string.byte(byte)
+      if (code < 32 and code ~= 9 and code ~= 10) or code == 127 then
+        return nil, "arguments may not contain control characters other than newline or tab"
       end
-      if has_forbidden_unicode(value) then
-        return nil, "send text may not contain bidirectional or C1 control characters"
-      end
-    elseif value:find("[^a-zA-Z0-9 _%.,/:%@%+%=%-'%(%)]") then
-      return nil,
-        "unsupported argument character; only ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) are supported"
+    end
+    if has_forbidden_unicode(value) then
+      return nil, "arguments may not contain bidirectional or C1 control characters"
     end
   end
   local parts = { HC_PATH, "hc" }
@@ -776,7 +765,7 @@ function M.start(host)
           items = { type = "string", maxLength = MAX_ARG },
           minItems = 1,
           maxItems = MAX_ARGS,
-          description = "hc arguments as separate strings, starting with a supported command. Except for the final message of `send`, arguments are limited to ASCII letters, digits, spaces and _ . , / : @ + = - ' ( ) ; the send message may contain arbitrary printable text, newline, and tab.",
+          description = "hc arguments as separate strings, starting with a supported command. Arguments may contain printable text, newlines, tabs, shell metacharacters, and non-ASCII text; they may not contain NUL, other control characters, C1 controls, or bidirectional formatting characters. Every argument is passed as one literal argv element.",
         },
       },
       required = { "argv" },
